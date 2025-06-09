@@ -1,0 +1,24 @@
+{application, realworld,
+ [{description, "RealWorld Erlang implementation - Medium.com clone"},
+  {vsn, "0.1.0"},
+  {registered, []},
+  {mod, {realworld_app, []}},
+  {applications,
+   [kernel,
+    stdlib,
+    sasl,
+    crypto,
+    cowboy,
+    jsx,
+    jwerl,
+    bcrypt,
+    epgsql,
+    poolboy,
+    uuid
+   ]},
+  {env,[]},
+  {modules, []},
+
+  {licenses, ["Apache-2.0"]},
+  {links, []}
+ ]}. 
