@@ -1,0 +1,368 @@
+openapi: 3.0.3
+info:
+  title: Cookie CRUD API
+  description: |
+    A RESTful API server built with Erlang, Cowboy, and SQLite for managing cookie data.
+
+    ## Features
+    - High-performance SQLite with WAL mode and connection pooling
+    - JSON storage with generated columns and strategic indexing
+    - Full CRUD operations for cookie management
+    - Production-ready OTP application structure
+
+    ## Database Schema
+    The application uses SQLite with generated columns for efficient querying:
+    - **Cookie**: Unique identifier extracted from JSON data
+    - **UserID**: User identifier associated with the cookie
+    - **Created**: Timestamp when cookie was created
+    - **LastUsed**: Timestamp when cookie was last accessed
+    - **Data**: Complete JSON document with flexible schema
+  version: 1.0.0
+  contact:
+    name: Cookie CRUD API
+  license:
+    name: MIT
+
+servers:
+  - url: http://localhost:8080
+    description: Development server
+
+paths:
+  /cookies:
+    get:
+      summary: List all cookies
+      description: Retrieve all cookies ordered by creation date (most recent first)
+      operationId: getAllCookies
+      responses:
+        "200":
+          description: List of all cookies
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  cookies:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Cookie"
+              examples:
+                success:
+                  summary: Successful response with cookies
+                  value:
+                    cookies:
+                      - cookie: "session123"
+                        user_id: 1001
+                        created: "1749658366"
+                        last_used: "1749658366"
+                      - cookie: "session456"
+                        user_id: 1002
+                        created: "1749658300"
+                        last_used: "1749658350"
+        "500":
+          $ref: "#/components/responses/DatabaseError"
+      tags:
+        - Cookies
+
+    post:
+      summary: Create a new cookie
+      description: Create a new cookie with provided data. Cookie ID must be unique.
+      operationId: createCookie
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateCookieRequest"
+            examples:
+              basic:
+                summary: Basic cookie creation
+                value:
+                  cookie: "session123"
+                  user_id: 1001
+              with_extra:
+                summary: Cookie with additional data
+                value:
+                  cookie: "session456"
+                  user_id: 1002
+                  session_type: "admin"
+                  ip_address: "192.168.1.1"
+      responses:
+        "201":
+          description: Cookie created successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Cookie"
+              examples:
+                success:
+                  summary: Successfully created cookie
+                  value:
+                    cookie: "session123"
+                    user_id: 1001
+                    created: "1749658366"
+                    last_used: "1749658366"
+        "400":
+          $ref: "#/components/responses/InvalidJSON"
+        "409":
+          description: Cookie already exists
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                conflict:
+                  summary: Cookie ID already exists
+                  value:
+                    error: "Cookie already exists"
+        "500":
+          $ref: "#/components/responses/DatabaseError"
+      tags:
+        - Cookies
+
+  /cookies/{cookieId}:
+    parameters:
+      - name: cookieId
+        in: path
+        required: true
+        description: Unique identifier for the cookie
+        schema:
+          type: string
+        examples:
+          session:
+            summary: Session cookie ID
+            value: "session123"
+          api_key:
+            summary: API key cookie ID
+            value: "api_key_456"
+
+    get:
+      summary: Get a specific cookie
+      description: Retrieve detailed information about a specific cookie by its ID
+      operationId: getCookie
+      responses:
+        "200":
+          description: Cookie details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Cookie"
+              examples:
+                success:
+                  summary: Successfully retrieved cookie
+                  value:
+                    cookie: "session123"
+                    user_id: 1001
+                    created: "1749658366"
+                    last_used: "1749658366"
+                    session_type: "user"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/DatabaseError"
+      tags:
+        - Cookies
+
+    put:
+      summary: Update a cookie
+      description: |
+        Update an existing cookie with new data. The cookie ID cannot be changed.
+        Only provided fields will be updated, existing fields not in the request will be preserved.
+        The `last_used` timestamp is automatically updated.
+      operationId: updateCookie
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateCookieRequest"
+            examples:
+              user_id_update:
+                summary: Update user ID
+                value:
+                  user_id: 1002
+              full_update:
+                summary: Update multiple fields
+                value:
+                  user_id: 1002
+                  extra_data: "updated"
+                  session_type: "admin"
+      responses:
+        "200":
+          description: Cookie updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Cookie"
+              examples:
+                success:
+                  summary: Successfully updated cookie
+                  value:
+                    cookie: "session123"
+                    user_id: 1002
+                    created: "1749658366"
+                    last_used: "1749658367"
+                    extra_data: "updated"
+                    session_type: "admin"
+        "400":
+          $ref: "#/components/responses/InvalidJSON"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/DatabaseError"
+      tags:
+        - Cookies
+
+    delete:
+      summary: Delete a cookie
+      description: Remove a cookie from the database permanently
+      operationId: deleteCookie
+      responses:
+        "200":
+          description: Cookie deleted successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Cookie deleted successfully"
+              examples:
+                success:
+                  summary: Successfully deleted cookie
+                  value:
+                    message: "Cookie deleted successfully"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/DatabaseError"
+      tags:
+        - Cookies
+
+components:
+  schemas:
+    Cookie:
+      type: object
+      description: Complete cookie data with metadata
+      required:
+        - cookie
+        - user_id
+        - created
+        - last_used
+      properties:
+        cookie:
+          type: string
+          description: Unique identifier for the cookie
+          example: "session123"
+        user_id:
+          type: integer
+          description: User ID associated with this cookie
+          example: 1001
+        created:
+          type: string
+          description: Unix timestamp when the cookie was created
+          example: "1749658366"
+        last_used:
+          type: string
+          description: Unix timestamp when the cookie was last accessed or updated
+          example: "1749658366"
+      additionalProperties: true
+
+    CreateCookieRequest:
+      type: object
+      description: Data required to create a new cookie
+      required:
+        - cookie
+        - user_id
+      properties:
+        cookie:
+          type: string
+          description: Unique identifier for the cookie (must not already exist)
+          example: "session123"
+        user_id:
+          type: integer
+          description: User ID to associate with this cookie
+          example: 1001
+      additionalProperties: true
+
+    UpdateCookieRequest:
+      type: object
+      description: Data to update in an existing cookie
+      properties:
+        user_id:
+          type: integer
+          description: New user ID for the cookie
+          example: 1002
+      additionalProperties: true
+
+    Error:
+      type: object
+      description: Error response format
+      required:
+        - error
+      properties:
+        error:
+          type: string
+          description: Human-readable error message
+          example: "Cookie not found"
+
+  responses:
+    NotFound:
+      description: Cookie not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          examples:
+            not_found:
+              summary: Cookie does not exist
+              value:
+                error: "Cookie not found"
+
+    InvalidJSON:
+      description: Invalid JSON in request body
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          examples:
+            invalid_json:
+              summary: Malformed JSON request
+              value:
+                error: "Invalid JSON"
+
+    DatabaseError:
+      description: Internal database error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          examples:
+            db_error:
+              summary: Database connection issue
+              value:
+                error: "Database error: connection_failed"
+
+  examples:
+    SessionCookie:
+      summary: User session cookie
+      value:
+        cookie: "session_abc123"
+        user_id: 1001
+        created: "1749658366"
+        last_used: "1749658366"
+        session_type: "web"
+
+    ApiTokenCookie:
+      summary: API token cookie
+      value:
+        cookie: "api_token_xyz789"
+        user_id: 1002
+        created: "1749658300"
+        last_used: "1749658350"
+        token_type: "api"
+        permissions: ["read", "write", "admin"]
+
+tags:
+  - name: Cookies
+    description: Cookie management operations

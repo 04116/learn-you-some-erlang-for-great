@@ -1,0 +1,16 @@
+{application, cookie_crud,
+ [{description, "Cookie CRUD API with Cowboy and SQLite"},
+  {vsn, "1.0.0"},
+  {registered, []},
+  {mod, {cookie_crud_app, []}},
+  {applications, [
+      kernel,
+      stdlib,
+      cowboy,
+      esqlite,
+      jsx
+  ]},
+  {env, []},
+  {modules, []},
+  {licenses, ["Apache 2.0"]},
+  {links, []}]}.

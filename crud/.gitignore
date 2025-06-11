@@ -1,0 +1,131 @@
+# Erlang/OTP Build Artifacts
+*.beam
+*.app
+erl_crash.dump
+.eunit/
+.qc/
+
+# Rebar3 Build Artifacts
+_build/
+.rebar3/
+rebar3.crashdump
+rebar.lock
+
+# Dialyzer PLT Files
+*.plt
+*.plt.info
+.dialyzer_plt
+.local_dialyzer_plt
+
+# eqWAlizer Files
+.eqwalizer/
+eqwalizer_*
+
+# Logs and Debug Files
+*.log
+log/
+logs/
+sasl_error.log
+error.log
+
+# Database Files
+*.db
+*.sqlite
+*.sqlite3
+cookies.db
+cookies.db-shm
+cookies.db-wal
+
+# OS Generated Files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Editor and IDE Files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.#*
+\#*#
+.*.un~
+
+# Temporary Files
+*.tmp
+*.temp
+tmp/
+temp/
+
+# Coverage Reports
+cover/
+.cover/
+*.coverdata
+
+# Documentation
+doc/
+docs/_build/
+edoc-info
+
+# Release and Distribution
+rel/
+_rel/
+*.tar.gz
+*.tgz
+
+# Environment Files
+.env
+.env.local
+.env.*.local
+
+# Lock Files
+mix.lock
+package-lock.json
+yarn.lock
+
+# Node.js (if using for tools)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Testing
+.ct_run.*/
+ct_run.*/
+test/*.beam
+
+# Emacs
+*~
+\#*\#
+/.emacs.desktop
+/.emacs.desktop.lock
+*.elc
+auto-save-list
+tramp
+.\#*
+
+# Vim
+[._]*.s[a-v][a-z]
+[._]*.sw[a-p]
+[._]s[a-rt-v][a-z]
+[._]ss[a-gi-z]
+[._]sw[a-p]
+
+# IntelliJ/IDEA
+*.iml
+*.ipr
+*.iws
+.idea/
+
+# Backup Files
+*.bak
+*.backup
+*~
+
+# Local Configuration
+local.config
+.local/
