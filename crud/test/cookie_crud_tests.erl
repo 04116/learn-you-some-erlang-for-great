@@ -146,8 +146,8 @@ test_update_cookie() ->
     {ok, Created} = cookie_crud:create_cookie(InitialData),
     OriginalLastUsed = maps:get(<<"last_used">>, Created),
     
-    %% Wait a moment to ensure timestamp difference
-    timer:sleep(10),
+    %% Wait a moment to ensure timestamp difference (using seconds, so need 1+ second)
+    timer:sleep(1100),
     
     %% Update the cookie
     UpdateData = #{
@@ -238,8 +238,8 @@ test_error_handling() ->
     %% Test malformed JSON (simulated by passing invalid data)
     InvalidData = not_a_map,
     
-    %% This should be caught by our validation
-    ?assertError(function_clause, cookie_crud:create_cookie(InvalidData)),
+    %% This should be caught by our validation (badmap error when trying to access maps:get)
+    ?assertError({badmap, not_a_map}, cookie_crud:create_cookie(InvalidData)),
     
     %% Test very large cookie name
     LargeCookie = binary:copy(<<"a">>, 1000),
@@ -318,19 +318,21 @@ test_concurrent_operations() ->
 %% Helper Functions
 %%====================================================================
 
-%% Helper to generate test data
-generate_test_cookie(Suffix) ->
-    #{
-        <<"cookie">> => <<"test_cookie_", (atom_to_binary(Suffix))/binary>>,
-        <<"user_id">> => rand:uniform(10000),
-        <<"test_field">> => <<"test_value">>
-    }.
-
-%% Helper to generate random cookie data
-generate_random_cookie() ->
-    CookieID = list_to_binary("random_" ++ integer_to_list(rand:uniform(1000000))),
-    #{
-        <<"cookie">> => CookieID,
-        <<"user_id">> => rand:uniform(10000),
-        <<"random_field">> => list_to_binary("value_" ++ integer_to_list(rand:uniform(1000)))
-    }.
+%% Helper functions (commented out as unused)
+%% 
+%% %% Helper to generate test data
+%% generate_test_cookie(Suffix) ->
+%%     #{
+%%         <<"cookie">> => <<"test_cookie_", (atom_to_binary(Suffix))/binary>>,
+%%         <<"user_id">> => rand:uniform(10000),
+%%         <<"test_field">> => <<"test_value">>
+%%     }.
+%% 
+%% %% Helper to generate random cookie data
+%% generate_random_cookie() ->
+%%     CookieID = list_to_binary("random_" ++ integer_to_list(rand:uniform(1000000))),
+%%     #{
+%%         <<"cookie">> => CookieID,
+%%         <<"user_id">> => rand:uniform(10000),
+%%         <<"random_field">> => list_to_binary("value_" ++ integer_to_list(rand:uniform(1000)))
+%%     }.

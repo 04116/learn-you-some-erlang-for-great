@@ -55,7 +55,9 @@ with_connection(Fun) ->
 
 -spec init_database() -> ok.
 init_database() ->
-    {ok, Db} = esqlite3:open(?DB_FILE),
+    %% Get database file from application environment or use default
+    DbFile = application:get_env(cookie_crud, db_file, ?DB_FILE),
+    {ok, Db} = esqlite3:open(DbFile),
     
     %% Enable WAL mode for better concurrency
     ok = esqlite3:exec(Db, "PRAGMA journal_mode = WAL;"),
@@ -131,9 +133,13 @@ init_database() ->
 %%%===================================================================
 
 init([]) ->
+    %% Get configuration from application environment
+    DbFile = application:get_env(cookie_crud, db_file, ?DB_FILE),
+    PoolSize = application:get_env(cookie_crud, db_pool_size, ?POOL_SIZE),
+    
     %% Initialize the connection pool
     Connections = lists:map(fun(_) ->
-        {ok, Conn} = esqlite3:open(?DB_FILE),
+        {ok, Conn} = esqlite3:open(DbFile),
         
         %% Apply per-connection optimizations
         ConnectionPragmas = [
@@ -149,9 +155,9 @@ init([]) ->
         end, ConnectionPragmas),
         
         Conn
-    end, lists:seq(1, ?POOL_SIZE)),
+    end, lists:seq(1, PoolSize)),
     
-    logger:info("Database connection pool initialized with ~p connections", [?POOL_SIZE]),
+    logger:info("Database connection pool initialized with ~p connections", [PoolSize]),
     {ok, #state{available = Connections}}.
 
 handle_call(get_connection, From, #state{available = [Conn|Rest]} = State) ->

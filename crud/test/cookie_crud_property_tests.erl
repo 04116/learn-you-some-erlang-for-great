@@ -451,11 +451,13 @@ verify_final_state(ExpectedState) ->
 
 -else.
 
+-include_lib("eunit/include/eunit.hrl").
+
 %% Fallback tests when PropEr is not available
 property_test_() ->
     [{"PropEr not available", 
       fun() -> 
-          ?debugMsg("PropEr property testing framework not available. Install PropEr to run property tests."),
+          io:format("PropEr property testing framework not available. Install PropEr to run property tests.~n"),
           ok 
       end}].
 

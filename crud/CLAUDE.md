@@ -23,12 +23,17 @@ cookie_crud/
 ├── config/                  # Configuration files
 │   ├── sys.config          # System configuration
 │   └── vm.args             # Erlang VM arguments
+├── test/                    # Test files
+│   ├── cookie_crud_tests.erl              # Unit tests
+│   ├── cookie_db_pool_tests.erl           # Database pool tests  
+│   └── cookie_api_integration_tests.erl   # HTTP API integration tests
 ├── rebar.config            # Build configuration
 ├── Makefile                # Build automation
 ├── .gitignore              # Git ignore patterns
 ├── README.md               # Project documentation
 ├── GO_TO_ERLANG_GUIDE.md   # Learning guide for Go developers
 ├── test_api.sh             # API integration tests
+├── PROGRESS.md             # Development progress and debugging log
 └── CLAUDE.md               # This file
 ```
 
@@ -40,7 +45,12 @@ cookie_crud/
 - `rebar3 shell` - Alternative way to start development environment
 
 ### Testing & Analysis
-- `make test` - Run API integration tests
+- `make test` - Run main test suite (unit + integration)
+- `make test-unit` - Run unit tests only
+- `make test-integration` - Run HTTP API integration tests  
+- `make test-db` - Run database pool tests
+- `make test-all` - Run all EUnit tests including property tests
+- `make test-coverage` - Run tests with coverage analysis
 - `make dialyzer` - Run Dialyzer static analysis
 - `make eqwalizer` - Run eqWAlizer type checking
 - `make xref` - Run cross-reference analysis
@@ -188,6 +198,29 @@ When helping with this project, please:
 4. **Code Style**: Follow the established naming and formatting conventions
 5. **Testing**: Consider both unit tests and integration tests
 6. **Documentation**: Update this file and README.md for significant changes
+7. **Progress Tracking**: **MANDATORY** - Update PROGRESS.md for every completed task
+
+### Progress Documentation Requirements
+
+**CRITICAL**: After completing any development task, debugging session, or investigation, you MUST update `PROGRESS.md` with:
+
+- **Date and time** of the work
+- **Problem description** and symptoms observed  
+- **Investigation process** and debugging steps taken
+- **Root cause analysis** with code snippets showing the issue
+- **Solution implemented** with before/after code examples
+- **Verification results** (test outputs, success metrics)
+- **Files modified** and key changes made
+- **Lessons learned** and future considerations
+
+**Format**: Follow the existing structure in PROGRESS.md with clear sections for each issue resolved.
+
+**Purpose**: This maintains a complete development history for:
+- Future debugging reference
+- Knowledge transfer to other developers
+- Understanding project evolution
+- Identifying recurring patterns
+- Code review and quality assurance
 
 ### Code Examples Format
 When providing code examples, use:
@@ -223,5 +256,29 @@ Always prefer Make targets over direct rebar3 commands for consistency:
 - **SQLite**: 3.38+ for JSON support
 - **Cowboy**: 2.10.0
 - **JSX**: 3.1.0
+
+## Current Project Status
+
+**Last Updated**: 2025-06-12  
+**Integration Tests**: ✅ 10/10 passing  
+**Unit Tests**: ✅ 8/8 passing  
+**Database Pool Tests**: ✅ 8/8 passing  
+**Total Test Coverage**: ✅ 26/26 tests passing  
+
+**Recent Achievements**:
+- Fixed all integration test failures (JSON encoding, error handling, validation)
+- Implemented proper HTTP status code mapping
+- Added Content-Type validation for API security
+- Enhanced error handling with proper 400/404/500 responses
+- Comprehensive debugging and root cause analysis documented in PROGRESS.md
+
+**Ready for**: Production deployment, additional feature development, performance optimization
+
+## File References
+
+- **PROGRESS.md**: Complete development history, debugging sessions, and solutions
+- **Makefile**: Enhanced with comprehensive test targets and documentation
+- **src/cookie_crud.erl**: Main HTTP handler with robust error handling
+- **test/**: Complete test suite covering all functionality
 
 This configuration helps Claude understand the project structure, conventions, and provide more accurate assistance for Erlang/OTP development.

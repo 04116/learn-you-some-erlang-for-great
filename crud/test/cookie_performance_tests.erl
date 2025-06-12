@@ -153,7 +153,7 @@ test_concurrent_write_performance() ->
     
     {TotalTime, Results} = timer:tc(fun() ->
         run_concurrent_operations(NumWriters, fun() ->
-            lists:map(fun(N) ->
+            lists:map(fun(_N) ->
                 CookieId = generate_unique_cookie_id(),
                 Data = generate_cookie_data(CookieId),
                 {Time, Result} = timer:tc(cookie_crud, create_cookie, [Data]),
