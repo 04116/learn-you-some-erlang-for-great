@@ -33,6 +33,18 @@ cookie_crud/
 ├── README.md               # Project documentation
 ├── GO_TO_ERLANG_GUIDE.md   # Learning guide for Go developers
 ├── test_api.sh             # API integration tests
+├── bench/                  # Performance testing scripts
+│   └── post_test.lua       # wrk Lua script for load testing
+├── nginx/                  # Nginx reverse proxy configuration
+│   └── nginx.conf          # Production-ready nginx config
+├── .github/                # GitHub Actions CI/CD workflows
+│   └── workflows/          # Automated testing and deployment
+│       ├── ci.yml          # Main CI/CD pipeline
+│       ├── docker.yml      # Docker build and security scanning
+│       └── release.yml     # Release management and artifacts
+├── Dockerfile              # Multi-stage Docker build
+├── docker-compose.yml      # Container orchestration
+├── .dockerignore           # Docker build exclusions
 ├── PROGRESS.md             # Development progress and debugging log
 └── CLAUDE.md               # This file
 ```
@@ -59,10 +71,25 @@ cookie_crud/
 - `make release` - Build production release
 - `make tar` - Create distribution tarball
 
+### Docker & Container Management
+- `docker-compose up -d` - Start production environment
+- `docker-compose --profile dev up -d` - Start development environment
+- `docker-compose --profile test up` - Run test environment
+- `docker-compose --profile load-test up` - Run performance tests
+- `docker-compose --profile monitoring up -d` - Start monitoring stack
+- `docker build -t cookie-crud .` - Build Docker image
+- `docker run -p 8080:8080 cookie-crud` - Run container
+
+### CI/CD & Deployment
+- `git tag v1.0.0 && git push origin v1.0.0` - Trigger release pipeline
+- GitHub Actions automatically handle testing, building, and deployment
+- View pipeline status at: `https://github.com/your-org/cookie-crud/actions`
+
 ### Cleanup
 - `make clean` - Clean build artifacts
 - `make clean-db` - Remove database files
 - `make clean-all` - Complete cleanup including PLT files
+- `docker-compose down -v` - Stop and remove containers with volumes
 
 ## API Endpoints
 
@@ -266,13 +293,18 @@ Always prefer Make targets over direct rebar3 commands for consistency:
 **Total Test Coverage**: ✅ 26/26 tests passing  
 
 **Recent Achievements**:
-- Fixed all integration test failures (JSON encoding, error handling, validation)
-- Implemented proper HTTP status code mapping
-- Added Content-Type validation for API security
-- Enhanced error handling with proper 400/404/500 responses
-- Comprehensive debugging and root cause analysis documented in PROGRESS.md
+- ✅ Fixed all integration test failures (JSON encoding, error handling, validation)
+- ✅ Implemented proper HTTP status code mapping
+- ✅ Added Content-Type validation for API security
+- ✅ Enhanced error handling with proper 400/404/500 responses
+- ✅ Comprehensive debugging and root cause analysis documented in PROGRESS.md
+- 🚀 **NEW**: Complete CI/CD pipeline with GitHub Actions
+- 🐳 **NEW**: Production-ready Docker containerization
+- 🔒 **NEW**: Security scanning and vulnerability management
+- 📊 **NEW**: Performance testing and monitoring setup
+- 🌐 **NEW**: Nginx reverse proxy with SSL/TLS and rate limiting
 
-**Ready for**: Production deployment, additional feature development, performance optimization
+**Ready for**: Enterprise production deployment with automated CI/CD, monitoring, and scaling
 
 ## File References
 

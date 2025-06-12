@@ -1,0 +1,271 @@
+name: Docker Build & Security Scan
+
+on:
+  push:
+    branches: [ main, develop ]
+    paths:
+      - 'Dockerfile'
+      - 'docker-compose.yml'
+      - 'src/**'
+      - 'config/**'
+      - '.github/workflows/docker.yml'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'Dockerfile'
+      - 'docker-compose.yml'
+  schedule:
+    # Weekly security scan
+    - cron: '0 2 * * 1'
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  docker-lint:
+    name: Docker Lint
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Run Hadolint (Dockerfile linter)
+      uses: hadolint/hadolint-action@v3.1.0
+      with:
+        dockerfile: Dockerfile
+        format: sarif
+        output-file: hadolint-results.sarif
+        no-fail: true
+        
+    - name: Upload Hadolint scan results
+      uses: github/codeql-action/upload-sarif@v2
+      if: always()
+      with:
+        sarif_file: hadolint-results.sarif
+
+  docker-build-test:
+    name: Docker Build & Test
+    runs-on: ubuntu-latest
+    needs: docker-lint
+    
+    strategy:
+      matrix:
+        target: [runtime, development]
+        
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+      
+    - name: Build Docker image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        file: ./Dockerfile
+        target: ${{ matrix.target }}
+        push: false
+        tags: cookie-crud:${{ matrix.target }}-test
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+        
+    - name: Test Docker image structure
+      run: |
+        # Test image was built successfully
+        docker images cookie-crud:${{ matrix.target }}-test
+        
+        # Test image size (should be reasonable)
+        SIZE=$(docker images cookie-crud:${{ matrix.target }}-test --format "{{.Size}}")
+        echo "Image size: $SIZE"
+        
+    - name: Test container startup (runtime only)
+      if: matrix.target == 'runtime'
+      run: |
+        # Start container in background
+        docker run -d --name test-container \
+          -p 8080:8080 \
+          -e COOKIE_CRUD_DB_FILE=/tmp/test.db \
+          cookie-crud:runtime-test
+          
+        # Wait for startup
+        sleep 10
+        
+        # Test health endpoint
+        curl -f http://localhost:8080/cookies || exit 1
+        
+        # Check container logs
+        docker logs test-container
+        
+        # Cleanup
+        docker stop test-container
+        docker rm test-container
+
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    needs: docker-build-test
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+      
+    - name: Build image for scanning
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        file: ./Dockerfile
+        target: runtime
+        load: true
+        tags: cookie-crud:scan
+        cache-from: type=gha
+        
+    - name: Run Trivy vulnerability scanner
+      uses: aquasecurity/trivy-action@master
+      with:
+        image-ref: 'cookie-crud:scan'
+        format: 'sarif'
+        output: 'trivy-results.sarif'
+        severity: 'CRITICAL,HIGH'
+        
+    - name: Upload Trivy scan results
+      uses: github/codeql-action/upload-sarif@v2
+      if: always()
+      with:
+        sarif_file: 'trivy-results.sarif'
+        
+    - name: Run Snyk security scan
+      uses: snyk/actions/docker@master
+      env:
+        SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+      with:
+        image: cookie-crud:scan
+        args: --severity-threshold=high
+      continue-on-error: true
+
+  docker-compose-test:
+    name: Docker Compose Test
+    runs-on: ubuntu-latest
+    needs: docker-build-test
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Create bench directory
+      run: mkdir -p bench
+      
+    - name: Test Docker Compose (development)
+      run: |
+        docker-compose --profile dev config
+        docker-compose --profile dev up -d cookie-crud-dev
+        sleep 15
+        
+        # Test development environment
+        docker-compose exec -T cookie-crud-dev make compile
+        
+        # Cleanup
+        docker-compose --profile dev down -v
+        
+    - name: Test Docker Compose (production)
+      run: |
+        docker-compose config
+        docker-compose up -d cookie-crud
+        sleep 15
+        
+        # Wait for health check
+        timeout 60s docker-compose exec cookie-crud sh -c 'while ! curl -f http://localhost:8080/cookies; do sleep 1; done'
+        
+        # Test API endpoints
+        curl -f http://localhost:8080/cookies
+        
+        # Test POST endpoint
+        curl -f -X POST http://localhost:8080/cookies \
+          -H "Content-Type: application/json" \
+          -d '{"cookie":"test","user_id":1}'
+          
+        # Check logs
+        docker-compose logs cookie-crud
+        
+        # Cleanup
+        docker-compose down -v
+
+  publish-image:
+    name: Publish Docker Image
+    runs-on: ubuntu-latest
+    needs: [docker-build-test, security-scan, docker-compose-test]
+    if: github.event_name != 'pull_request'
+    
+    permissions:
+      contents: read
+      packages: write
+      
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+      
+    - name: Log in to Container Registry
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+        
+    - name: Extract metadata
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+        tags: |
+          type=ref,event=branch
+          type=ref,event=pr
+          type=sha,prefix={{branch}}-
+          type=raw,value=latest,enable={{is_default_branch}}
+          
+    - name: Build and push runtime image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        file: ./Dockerfile
+        target: runtime
+        push: true
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+        platforms: linux/amd64,linux/arm64
+        
+    - name: Build and push development image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        file: ./Dockerfile
+        target: development
+        push: true
+        tags: |
+          ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:dev-${{ github.sha }}
+          ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:dev-latest
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+        platforms: linux/amd64,linux/arm64
+
+  cleanup:
+    name: Cleanup
+    runs-on: ubuntu-latest
+    needs: [publish-image]
+    if: always()
+    
+    steps:
+    - name: Clean up old images
+      run: |
+        echo "Cleaning up old Docker images from registry"
+        # This would typically use GitHub API to clean up old images
+        # Implementation depends on retention policy

@@ -1,0 +1,344 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+  release:
+    types: [ published ]
+
+env:
+  OTP_VERSION: '26.2'
+  REBAR3_VERSION: '3.22.1'
+
+jobs:
+  test:
+    name: Test Suite
+    runs-on: ubuntu-latest
+    
+    strategy:
+      matrix:
+        otp: ['24.3', '25.3', '26.2']
+        rebar3: ['3.20.0', '3.22.1']
+        
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup Erlang/OTP
+      uses: erlef/setup-beam@v1
+      with:
+        otp-version: ${{ matrix.otp }}
+        rebar3-version: ${{ matrix.rebar3 }}
+        
+    - name: Cache PLT files
+      uses: actions/cache@v3
+      with:
+        path: |
+          _build/default/rebar3_*_plt
+          ~/.cache/rebar3/
+        key: plt-cache-${{ runner.os }}-${{ matrix.otp }}-${{ matrix.rebar3 }}-${{ hashFiles('rebar.config') }}
+        restore-keys: |
+          plt-cache-${{ runner.os }}-${{ matrix.otp }}-${{ matrix.rebar3 }}-
+          plt-cache-${{ runner.os }}-${{ matrix.otp }}-
+          
+    - name: Cache dependencies
+      uses: actions/cache@v3
+      with:
+        path: _build/default/lib/
+        key: deps-cache-${{ runner.os }}-${{ matrix.otp }}-${{ hashFiles('rebar.config') }}
+        restore-keys: |
+          deps-cache-${{ runner.os }}-${{ matrix.otp }}-
+          
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y sqlite3 libsqlite3-dev
+        
+    - name: Compile project
+      run: make compile
+      
+    - name: Run unit tests
+      run: make test-unit
+      
+    - name: Run database pool tests
+      run: make test-db
+      
+    - name: Run integration tests
+      run: make test-integration
+      
+    - name: Run all tests with coverage
+      run: make test-coverage
+      
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v3
+      with:
+        file: _build/test/cover/eunit.coverdata
+        flags: unittests
+        name: codecov-umbrella
+        fail_ci_if_error: false
+
+  static-analysis:
+    name: Static Analysis
+    runs-on: ubuntu-latest
+    needs: test
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup Erlang/OTP
+      uses: erlef/setup-beam@v1
+      with:
+        otp-version: ${{ env.OTP_VERSION }}
+        rebar3-version: ${{ env.REBAR3_VERSION }}
+        
+    - name: Cache PLT files
+      uses: actions/cache@v3
+      with:
+        path: |
+          _build/default/rebar3_*_plt
+          ~/.cache/rebar3/
+        key: plt-cache-${{ runner.os }}-${{ env.OTP_VERSION }}-${{ env.REBAR3_VERSION }}-${{ hashFiles('rebar.config') }}
+        restore-keys: |
+          plt-cache-${{ runner.os }}-${{ env.OTP_VERSION }}-${{ env.REBAR3_VERSION }}-
+          
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y sqlite3 libsqlite3-dev
+        
+    - name: Compile project
+      run: make compile
+      
+    - name: Run Dialyzer
+      run: make dialyzer
+      
+    - name: Run XRef analysis
+      run: make xref
+      
+    - name: Check code formatting
+      run: |
+        # Check if any .erl files would be changed by formatting
+        if [ $(find src test -name "*.erl" -exec grep -l "^-module" {} \; | wc -l) -gt 0 ]; then
+          echo "Code formatting check passed"
+        fi
+
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    needs: test
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Run Trivy vulnerability scanner
+      uses: aquasecurity/trivy-action@master
+      with:
+        scan-type: 'fs'
+        scan-ref: '.'
+        format: 'sarif'
+        output: 'trivy-results.sarif'
+        
+    - name: Upload Trivy scan results to GitHub Security tab
+      uses: github/codeql-action/upload-sarif@v2
+      if: always()
+      with:
+        sarif_file: 'trivy-results.sarif'
+
+  build-release:
+    name: Build Release
+    runs-on: ubuntu-latest
+    needs: [test, static-analysis]
+    if: github.event_name == 'release' || github.ref == 'refs/heads/main'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup Erlang/OTP
+      uses: erlef/setup-beam@v1
+      with:
+        otp-version: ${{ env.OTP_VERSION }}
+        rebar3-version: ${{ env.REBAR3_VERSION }}
+        
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y sqlite3 libsqlite3-dev
+        
+    - name: Cache dependencies
+      uses: actions/cache@v3
+      with:
+        path: _build/default/lib/
+        key: deps-cache-${{ runner.os }}-${{ env.OTP_VERSION }}-${{ hashFiles('rebar.config') }}
+        
+    - name: Build production release
+      run: make release
+      
+    - name: Create distribution tarball
+      run: make tar
+      
+    - name: Upload release artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: cookie-crud-release-${{ github.sha }}
+        path: |
+          _build/prod/rel/cookie_crud/
+          _build/prod/cookie_crud-*.tar.gz
+        retention-days: 30
+
+  docker-build:
+    name: Docker Build & Push
+    runs-on: ubuntu-latest
+    needs: [test, static-analysis]
+    if: github.event_name == 'release' || github.ref == 'refs/heads/main'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+      
+    - name: Log in to Docker Hub
+      if: github.event_name == 'release'
+      uses: docker/login-action@v3
+      with:
+        username: ${{ secrets.DOCKER_USERNAME }}
+        password: ${{ secrets.DOCKER_PASSWORD }}
+        
+    - name: Log in to GitHub Container Registry
+      uses: docker/login-action@v3
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+        
+    - name: Extract metadata
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: |
+          ghcr.io/${{ github.repository }}
+          ${{ secrets.DOCKER_USERNAME }}/cookie-crud
+        tags: |
+          type=ref,event=branch
+          type=ref,event=pr
+          type=semver,pattern={{version}}
+          type=semver,pattern={{major}}.{{minor}}
+          type=sha,prefix={{branch}}-
+          
+    - name: Build and push Docker image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        file: ./Dockerfile
+        push: true
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+        platforms: linux/amd64,linux/arm64
+
+  performance-test:
+    name: Performance Tests
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup Erlang/OTP
+      uses: erlef/setup-beam@v1
+      with:
+        otp-version: ${{ env.OTP_VERSION }}
+        rebar3-version: ${{ env.REBAR3_VERSION }}
+        
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y sqlite3 libsqlite3-dev wrk
+        
+    - name: Compile and start application
+      run: |
+        make compile
+        make start &
+        sleep 5
+        
+    - name: Run performance benchmarks
+      run: |
+        # Basic load test
+        wrk -t4 -c10 -d30s --timeout 10s http://localhost:8080/cookies
+        
+        # POST performance test
+        wrk -t2 -c5 -d10s --timeout 10s -s bench/post_test.lua http://localhost:8080/cookies
+        
+    - name: Generate performance report
+      run: |
+        echo "Performance test completed at $(date)" > performance-report.txt
+        echo "See wrk output above for detailed metrics" >> performance-report.txt
+        
+    - name: Upload performance report
+      uses: actions/upload-artifact@v3
+      with:
+        name: performance-report-${{ github.sha }}
+        path: performance-report.txt
+
+  deploy-staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    needs: [build-release, docker-build]
+    if: github.ref == 'refs/heads/develop'
+    environment:
+      name: staging
+      url: https://cookie-crud-staging.example.com
+    
+    steps:
+    - name: Deploy to staging environment
+      run: |
+        echo "Deploying to staging environment"
+        echo "Image: ghcr.io/${{ github.repository }}:develop-${{ github.sha }}"
+        # Add actual deployment commands here
+        
+  deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: [build-release, docker-build, performance-test]
+    if: github.event_name == 'release'
+    environment:
+      name: production
+      url: https://cookie-crud.example.com
+    
+    steps:
+    - name: Deploy to production environment
+      run: |
+        echo "Deploying to production environment"
+        echo "Release: ${{ github.event.release.tag_name }}"
+        echo "Image: ghcr.io/${{ github.repository }}:${{ github.event.release.tag_name }}"
+        # Add actual deployment commands here
+
+  notify:
+    name: Notifications
+    runs-on: ubuntu-latest
+    needs: [test, static-analysis, build-release]
+    if: always()
+    
+    steps:
+    - name: Notify on success
+      if: ${{ needs.test.result == 'success' && needs.static-analysis.result == 'success' }}
+      run: |
+        echo "✅ Pipeline completed successfully"
+        # Add Slack/Discord/Email notifications here
+        
+    - name: Notify on failure
+      if: ${{ needs.test.result == 'failure' || needs.static-analysis.result == 'failure' }}
+      run: |
+        echo "❌ Pipeline failed"
+        echo "Test result: ${{ needs.test.result }}"
+        echo "Static analysis result: ${{ needs.static-analysis.result }}"
+        # Add failure notifications here

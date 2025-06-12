@@ -1,0 +1,15 @@
+# Grafana dashboard provisioning configuration
+# Automatically loads dashboards from the dashboards directory
+
+apiVersion: 1
+
+providers:
+  - name: 'Cookie CRUD API Dashboards'
+    orgId: 1
+    folder: 'Cookie CRUD API'
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 10
+    allowUiUpdates: true
+    options:
+      path: /etc/grafana/provisioning/dashboards

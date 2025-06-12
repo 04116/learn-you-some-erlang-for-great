@@ -1,0 +1,393 @@
+name: Release Management
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g., v1.0.0)'
+        required: true
+        type: string
+      prerelease:
+        description: 'Mark as pre-release'
+        required: false
+        type: boolean
+        default: false
+
+env:
+  OTP_VERSION: '26.2'
+  REBAR3_VERSION: '3.22.1'
+
+jobs:
+  validate-release:
+    name: Validate Release
+    runs-on: ubuntu-latest
+    
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      is_prerelease: ${{ steps.version.outputs.is_prerelease }}
+      
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Determine version
+      id: version
+      run: |
+        if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          VERSION="${{ github.event.inputs.version }}"
+          IS_PRERELEASE="${{ github.event.inputs.prerelease }}"
+        else
+          VERSION="${{ github.ref_name }}"
+          IS_PRERELEASE="false"
+          if [[ "$VERSION" =~ -alpha|-beta|-rc ]]; then
+            IS_PRERELEASE="true"
+          fi
+        fi
+        
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+        echo "is_prerelease=$IS_PRERELEASE" >> $GITHUB_OUTPUT
+        
+        echo "Release version: $VERSION"
+        echo "Is prerelease: $IS_PRERELEASE"
+        
+    - name: Validate version format
+      run: |
+        VERSION="${{ steps.version.outputs.version }}"
+        if [[ ! "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9]+)*$ ]]; then
+          echo "Invalid version format: $VERSION"
+          echo "Expected format: vX.Y.Z or vX.Y.Z-suffix"
+          exit 1
+        fi
+        
+    - name: Check if tag exists
+      if: github.event_name == 'workflow_dispatch'
+      run: |
+        VERSION="${{ steps.version.outputs.version }}"
+        if git rev-parse "$VERSION" >/dev/null 2>&1; then
+          echo "Tag $VERSION already exists"
+          exit 1
+        fi
+
+  run-tests:
+    name: Full Test Suite
+    runs-on: ubuntu-latest
+    needs: validate-release
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup Erlang/OTP
+      uses: erlef/setup-beam@v1
+      with:
+        otp-version: ${{ env.OTP_VERSION }}
+        rebar3-version: ${{ env.REBAR3_VERSION }}
+        
+    - name: Cache dependencies
+      uses: actions/cache@v3
+      with:
+        path: |
+          _build/default/lib/
+          _build/default/rebar3_*_plt
+        key: release-deps-${{ runner.os }}-${{ env.OTP_VERSION }}-${{ hashFiles('rebar.config') }}
+        
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y sqlite3 libsqlite3-dev
+        
+    - name: Run comprehensive test suite
+      run: |
+        make clean
+        make compile
+        make test-all
+        make dialyzer
+        make xref
+
+  build-release-artifacts:
+    name: Build Release Artifacts
+    runs-on: ubuntu-latest
+    needs: [validate-release, run-tests]
+    
+    strategy:
+      matrix:
+        os: [ubuntu-latest]
+        otp: ['24.3', '25.3', '26.2']
+        
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup Erlang/OTP
+      uses: erlef/setup-beam@v1
+      with:
+        otp-version: ${{ matrix.otp }}
+        rebar3-version: ${{ env.REBAR3_VERSION }}
+        
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y sqlite3 libsqlite3-dev
+        
+    - name: Cache dependencies
+      uses: actions/cache@v3
+      with:
+        path: _build/default/lib/
+        key: release-deps-${{ runner.os }}-${{ matrix.otp }}-${{ hashFiles('rebar.config') }}
+        
+    - name: Build production release
+      run: |
+        make clean
+        make release
+        
+    - name: Create distribution tarball
+      run: make tar
+      
+    - name: Create release archive
+      run: |
+        VERSION="${{ needs.validate-release.outputs.version }}"
+        OTP_VERSION="${{ matrix.otp }}"
+        ARCHIVE_NAME="cookie-crud-${VERSION}-otp${OTP_VERSION}-linux-x86_64"
+        
+        mkdir -p "release/${ARCHIVE_NAME}"
+        cp -r _build/prod/rel/cookie_crud/* "release/${ARCHIVE_NAME}/"
+        
+        # Add release documentation
+        cp README.md "release/${ARCHIVE_NAME}/"
+        cp PROGRESS.md "release/${ARCHIVE_NAME}/"
+        
+        # Create installation script
+        cat > "release/${ARCHIVE_NAME}/install.sh" << 'EOF'
+        #!/bin/bash
+        set -e
+        
+        echo "Installing Cookie CRUD API..."
+        
+        # Create user and directories
+        sudo useradd -r -s /bin/false cookie_crud || true
+        sudo mkdir -p /opt/cookie_crud
+        sudo mkdir -p /var/lib/cookie_crud
+        sudo mkdir -p /var/log/cookie_crud
+        
+        # Copy files
+        sudo cp -r * /opt/cookie_crud/
+        sudo chown -R cookie_crud:cookie_crud /opt/cookie_crud
+        sudo chown -R cookie_crud:cookie_crud /var/lib/cookie_crud
+        sudo chown -R cookie_crud:cookie_crud /var/log/cookie_crud
+        
+        # Create systemd service
+        sudo tee /etc/systemd/system/cookie-crud.service > /dev/null << 'SERVICE'
+        [Unit]
+        Description=Cookie CRUD API
+        After=network.target
+        
+        [Service]
+        Type=forking
+        User=cookie_crud
+        Group=cookie_crud
+        WorkingDirectory=/opt/cookie_crud
+        ExecStart=/opt/cookie_crud/bin/cookie_crud start
+        ExecStop=/opt/cookie_crud/bin/cookie_crud stop
+        Restart=on-failure
+        RestartSec=5
+        Environment=COOKIE_CRUD_DB_FILE=/var/lib/cookie_crud/cookies.db
+        Environment=COOKIE_CRUD_PORT=8080
+        
+        [Install]
+        WantedBy=multi-user.target
+        SERVICE
+        
+        sudo systemctl daemon-reload
+        sudo systemctl enable cookie-crud
+        
+        echo "Installation completed!"
+        echo "Start with: sudo systemctl start cookie-crud"
+        echo "Check status: sudo systemctl status cookie-crud"
+        EOF
+        
+        chmod +x "release/${ARCHIVE_NAME}/install.sh"
+        
+        # Create archive
+        cd release
+        tar -czf "${ARCHIVE_NAME}.tar.gz" "${ARCHIVE_NAME}"
+        
+    - name: Upload release artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: release-otp${{ matrix.otp }}
+        path: release/*.tar.gz
+        retention-days: 30
+
+  build-docker-release:
+    name: Build Docker Release
+    runs-on: ubuntu-latest
+    needs: [validate-release, run-tests]
+    
+    permissions:
+      contents: read
+      packages: write
+      
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+      
+    - name: Log in to GitHub Container Registry
+      uses: docker/login-action@v3
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+        
+    - name: Log in to Docker Hub
+      if: secrets.DOCKER_USERNAME != ''
+      uses: docker/login-action@v3
+      with:
+        username: ${{ secrets.DOCKER_USERNAME }}
+        password: ${{ secrets.DOCKER_PASSWORD }}
+        
+    - name: Extract metadata
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: |
+          ghcr.io/${{ github.repository }}
+          ${{ secrets.DOCKER_USERNAME }}/cookie-crud
+        tags: |
+          type=semver,pattern={{version}},value=${{ needs.validate-release.outputs.version }}
+          type=semver,pattern={{major}}.{{minor}},value=${{ needs.validate-release.outputs.version }}
+          type=semver,pattern={{major}},value=${{ needs.validate-release.outputs.version }}
+          type=raw,value=latest,enable={{is_default_branch}}
+          
+    - name: Build and push Docker image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        file: ./Dockerfile
+        target: runtime
+        push: true
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        platforms: linux/amd64,linux/arm64
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+
+  create-release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: [validate-release, build-release-artifacts, build-docker-release]
+    
+    permissions:
+      contents: write
+      
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Download all artifacts
+      uses: actions/download-artifact@v3
+      with:
+        path: artifacts
+        
+    - name: Generate changelog
+      id: changelog
+      run: |
+        VERSION="${{ needs.validate-release.outputs.version }}"
+        
+        # Get previous tag
+        PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+        
+        echo "# Changelog for $VERSION" > CHANGELOG.md
+        echo "" >> CHANGELOG.md
+        
+        if [ -n "$PREV_TAG" ]; then
+          echo "## Changes since $PREV_TAG" >> CHANGELOG.md
+          echo "" >> CHANGELOG.md
+          
+          # Get commit messages
+          git log --pretty=format:"- %s" $PREV_TAG..HEAD >> CHANGELOG.md
+        else
+          echo "## Initial Release" >> CHANGELOG.md
+          echo "" >> CHANGELOG.md
+          echo "- Initial release of Cookie CRUD API" >> CHANGELOG.md
+        fi
+        
+        echo "" >> CHANGELOG.md
+        echo "## Docker Images" >> CHANGELOG.md
+        echo "" >> CHANGELOG.md
+        echo "- \`ghcr.io/${{ github.repository }}:$VERSION\`" >> CHANGELOG.md
+        echo "- \`ghcr.io/${{ github.repository }}:latest\`" >> CHANGELOG.md
+        
+        echo "" >> CHANGELOG.md
+        echo "## Release Artifacts" >> CHANGELOG.md
+        echo "" >> CHANGELOG.md
+        echo "Binary releases are available for multiple Erlang/OTP versions:" >> CHANGELOG.md
+        echo "" >> CHANGELOG.md
+        find artifacts -name "*.tar.gz" -exec basename {} \; | sort | sed 's/^/- /' >> CHANGELOG.md
+        
+    - name: Create Release
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: ${{ needs.validate-release.outputs.version }}
+        name: Release ${{ needs.validate-release.outputs.version }}
+        body_path: CHANGELOG.md
+        prerelease: ${{ needs.validate-release.outputs.is_prerelease == 'true' }}
+        files: |
+          artifacts/**/*.tar.gz
+        generate_release_notes: true
+        
+  update-documentation:
+    name: Update Documentation
+    runs-on: ubuntu-latest
+    needs: [create-release]
+    if: needs.validate-release.outputs.is_prerelease == 'false'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+        
+    - name: Update version in documentation
+      run: |
+        VERSION="${{ needs.validate-release.outputs.version }}"
+        
+        # Update README.md
+        sed -i "s/Version: .*/Version: $VERSION/" README.md
+        
+        # Update CLAUDE.md status
+        sed -i "s/Last Updated: .*/Last Updated: $(date '+%Y-%m-%d')/" CLAUDE.md
+        sed -i "s/Version: .*/Version: $VERSION/" CLAUDE.md
+        
+    - name: Commit documentation updates
+      run: |
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        git add README.md CLAUDE.md
+        git commit -m "Update documentation for release ${{ needs.validate-release.outputs.version }}" || exit 0
+        git push
+
+  notify-release:
+    name: Notify Release
+    runs-on: ubuntu-latest
+    needs: [create-release, update-documentation]
+    if: always()
+    
+    steps:
+    - name: Notify success
+      if: needs.create-release.result == 'success'
+      run: |
+        echo "🎉 Release ${{ needs.validate-release.outputs.version }} created successfully!"
+        echo "Docker images available at ghcr.io/${{ github.repository }}"
+        # Add Slack/Discord/Email notifications here
+        
+    - name: Notify failure
+      if: needs.create-release.result == 'failure'
+      run: |
+        echo "❌ Release creation failed"
+        # Add failure notifications here

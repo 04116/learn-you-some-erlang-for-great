@@ -1,0 +1,59 @@
+# Git and version control
+.git/
+.gitignore
+.github/
+
+# Build artifacts
+_build/
+ebin/
+*.beam
+*.plt
+*.crashdump
+erl_crash.dump
+
+# Test artifacts
+test_integration.db
+test_pool.db
+cookies.db
+*.db
+
+# Logs
+*.log
+logs/
+
+# Documentation
+*.md
+docs/
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Coverage reports
+cover/
+*.coverdata
+
+# Dependencies (will be downloaded in container)
+deps/
+
+# Release artifacts (built in container)
+rel/
+*.tar.gz
+
+# Development files
+bench/
+scripts/
+.cursor/
+
+# OS specific
+Thumbs.db
+Desktop.ini

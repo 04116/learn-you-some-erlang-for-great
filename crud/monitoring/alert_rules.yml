@@ -1,0 +1,162 @@
+# Prometheus alerting rules for Cookie CRUD API
+# Defines alerts for application and infrastructure monitoring
+
+groups:
+  # Application Health Alerts
+  - name: cookie-crud-health
+    rules:
+    - alert: CookieCrudAPIDown
+      expr: up{job="cookie-crud-api"} == 0
+      for: 30s
+      labels:
+        severity: critical
+        service: cookie-crud-api
+      annotations:
+        summary: "Cookie CRUD API is down"
+        description: "Cookie CRUD API has been down for more than 30 seconds"
+        runbook_url: "https://github.com/your-org/cookie-crud/wiki/Runbook-API-Down"
+
+    - alert: CookieCrudHealthCheckFailing
+      expr: up{job="cookie-crud-health"} == 0
+      for: 1m
+      labels:
+        severity: warning
+        service: cookie-crud-api
+      annotations:
+        summary: "Cookie CRUD API health check failing"
+        description: "Cookie CRUD API health check has been failing for more than 1 minute"
+
+  # Performance Alerts
+  - name: cookie-crud-performance
+    rules:
+    - alert: HighResponseTime
+      expr: histogram_quantile(0.95, rate(http_request_duration_seconds_bucket{job="cookie-crud-api"}[5m])) > 1.0
+      for: 2m
+      labels:
+        severity: warning
+        service: cookie-crud-api
+      annotations:
+        summary: "High response time detected"
+        description: "95th percentile response time is {{ $value }}s for more than 2 minutes"
+
+    - alert: HighErrorRate
+      expr: rate(http_requests_total{job="cookie-crud-api",status=~"5.."}[5m]) / rate(http_requests_total{job="cookie-crud-api"}[5m]) > 0.05
+      for: 1m
+      labels:
+        severity: critical
+        service: cookie-crud-api
+      annotations:
+        summary: "High error rate detected"
+        description: "Error rate is {{ $value | humanizePercentage }} for more than 1 minute"
+
+    - alert: HighRequestRate
+      expr: rate(http_requests_total{job="cookie-crud-api"}[5m]) > 1000
+      for: 2m
+      labels:
+        severity: warning
+        service: cookie-crud-api
+      annotations:
+        summary: "High request rate detected"
+        description: "Request rate is {{ $value }} requests/second for more than 2 minutes"
+
+  # Resource Usage Alerts
+  - name: cookie-crud-resources
+    rules:
+    - alert: HighMemoryUsage
+      expr: (container_memory_usage_bytes{name="cookie-crud"} / container_spec_memory_limit_bytes{name="cookie-crud"}) > 0.8
+      for: 5m
+      labels:
+        severity: warning
+        service: cookie-crud-api
+      annotations:
+        summary: "High memory usage detected"
+        description: "Memory usage is {{ $value | humanizePercentage }} for more than 5 minutes"
+
+    - alert: HighCPUUsage
+      expr: rate(container_cpu_usage_seconds_total{name="cookie-crud"}[5m]) > 0.8
+      for: 5m
+      labels:
+        severity: warning
+        service: cookie-crud-api
+      annotations:
+        summary: "High CPU usage detected"
+        description: "CPU usage is {{ $value | humanizePercentage }} for more than 5 minutes"
+
+  # Database Alerts
+  - name: cookie-crud-database
+    rules:
+    - alert: DatabaseConnectionPoolExhausted
+      expr: db_connection_pool_active{job="cookie-crud-api"} >= db_connection_pool_max{job="cookie-crud-api"}
+      for: 1m
+      labels:
+        severity: critical
+        service: cookie-crud-api
+      annotations:
+        summary: "Database connection pool exhausted"
+        description: "All database connections are in use for more than 1 minute"
+
+    - alert: SlowDatabaseQueries
+      expr: histogram_quantile(0.95, rate(db_query_duration_seconds_bucket{job="cookie-crud-api"}[5m])) > 0.5
+      for: 2m
+      labels:
+        severity: warning
+        service: cookie-crud-api
+      annotations:
+        summary: "Slow database queries detected"
+        description: "95th percentile database query time is {{ $value }}s for more than 2 minutes"
+
+  # Infrastructure Alerts
+  - name: infrastructure
+    rules:
+    - alert: NginxDown
+      expr: up{job="nginx"} == 0
+      for: 30s
+      labels:
+        severity: critical
+        service: nginx
+      annotations:
+        summary: "Nginx is down"
+        description: "Nginx reverse proxy has been down for more than 30 seconds"
+
+    - alert: PrometheusDown
+      expr: up{job="prometheus"} == 0
+      for: 1m
+      labels:
+        severity: warning
+        service: prometheus
+      annotations:
+        summary: "Prometheus is down"
+        description: "Prometheus monitoring has been down for more than 1 minute"
+
+    - alert: GrafanaDown
+      expr: up{job="grafana"} == 0
+      for: 1m
+      labels:
+        severity: warning
+        service: grafana
+      annotations:
+        summary: "Grafana is down"
+        description: "Grafana dashboard has been down for more than 1 minute"
+
+  # Disk Space Alerts
+  - name: disk-space
+    rules:
+    - alert: DiskSpaceUsageHigh
+      expr: (node_filesystem_size_bytes - node_filesystem_avail_bytes) / node_filesystem_size_bytes > 0.8
+      for: 5m
+      labels:
+        severity: warning
+        service: system
+      annotations:
+        summary: "High disk space usage"
+        description: "Disk space usage is {{ $value | humanizePercentage }} on {{ $labels.device }}"
+
+    - alert: DiskSpaceUsageCritical
+      expr: (node_filesystem_size_bytes - node_filesystem_avail_bytes) / node_filesystem_size_bytes > 0.9
+      for: 1m
+      labels:
+        severity: critical
+        service: system
+      annotations:
+        summary: "Critical disk space usage"
+        description: "Disk space usage is {{ $value | humanizePercentage }} on {{ $labels.device }}"
