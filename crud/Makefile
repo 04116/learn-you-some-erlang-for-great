@@ -1,4 +1,4 @@
-.PHONY: all compile clean deps shell test test-unit test-integration test-db test-all test-coverage dialyzer eqwalizer xref start stop dev clean-db clean-all bench quick-bench help
+.PHONY: all compile clean deps shell test test-unit test-integration test-db test-all test-coverage dialyzer eqwalizer xref start stop dev clean-db clean-all bench quick-bench cluster-start cluster-stop cluster-test cluster-clean help
 
 # Default target
 all: compile
@@ -116,6 +116,24 @@ release:
 tar:
 	@rebar3 as prod tar
 
+# Cluster management targets
+cluster-start: compile
+	@echo "Starting Cookie CRUD cluster..."
+	@./start_cluster.sh
+
+cluster-stop:
+	@echo "Stopping Cookie CRUD cluster..."
+	@./stop_cluster.sh
+
+cluster-test: 
+	@echo "Testing Cookie CRUD cluster..."
+	@./test_cluster.sh
+
+cluster-clean: cluster-stop
+	@echo "Cleaning cluster databases..."
+	@rm -f cookies_node*.db
+	@echo "Cluster cleanup done"
+
 # Help target
 help:
 	@echo "Available targets:"
@@ -155,5 +173,11 @@ help:
 	@echo "Production:"
 	@echo "  release           - Build production release"
 	@echo "  tar               - Create release tarball"
+	@echo ""
+	@echo "Cluster Management:"
+	@echo "  cluster-start     - Start multi-node cluster (ports 8081-8083)"
+	@echo "  cluster-stop      - Stop all cluster nodes"
+	@echo "  cluster-test      - Run cluster functionality tests"
+	@echo "  cluster-clean     - Stop cluster and clean databases"
 	@echo ""
 	@echo "  help              - Show this help"

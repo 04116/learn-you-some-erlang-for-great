@@ -2,11 +2,11 @@
 %% Cookie CRUD HTTP Handler - Main Business Logic Module
 %% =============================================================================
 %% This module implements the HTTP request handler for the Cookie CRUD API.
-%% 
+%%
 %% For Go developers: This is similar to your http.Handler interface, but uses
 %% Erlang's pattern matching and functional programming approach instead of
 %% object-oriented methods.
-%% 
+%%
 %% Key Erlang concepts for Go developers:
 %% - Atoms: Like Go's string constants but more efficient (e.g., <<"GET">>)
 %% - Pattern matching: Instead of switch/case, we match on function parameters
@@ -35,7 +35,7 @@
 %% =============================================================================
 %% This is the main entry point for all HTTP requests, similar to Go's:
 %% func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request)
-%% 
+%%
 %% Key differences from Go:
 %% - Function specification (-spec) declares types upfront
 %% - Pattern matching on Method instead of r.Method string comparison
@@ -45,10 +45,13 @@
 
 -spec init(cowboy_req:req(), term()) -> {ok, cowboy_req:req(), term()}.
 init(Req, _State) ->
+    %% Record start time for metrics
+    StartTime = erlang:monotonic_time(microsecond),
+
     %% Extract HTTP method (like r.Method in Go)
     %% Returns binary (<<"GET">>) instead of string
     Method = cowboy_req:method(Req),
-    
+
     %% Extract URL parameter :cookie from route (like mux.Vars(r)["cookie"] in Gorilla)
     %% Returns 'undefined' if no parameter (Go would return "", false)
     Cookie = cowboy_req:binding(cookie, Req),
@@ -59,17 +62,26 @@ init(Req, _State) ->
     %% Each handler returns a new Req object (immutable updates)
     Req2 = case Method of
         <<"GET">> ->
-            handle_get(Req, Cookie);
+            handle_get(Req, Cookie);  %% Handle both /cookies and /cookies/:cookie
         <<"POST">> ->
             handle_post(Req);
-        <<"PUT">> ->
+        <<"PUT">> when Cookie =/= undefined ->
             handle_put(Req, Cookie);
-        <<"DELETE">> ->
+        <<"DELETE">> when Cookie =/= undefined ->
             handle_delete(Req, Cookie);
         _ ->
-            %% Default case for unsupported methods
+            %% Default case for unsupported methods or missing required parameters
             reply_error(Req, 405, <<"Method Not Allowed">>)
     end,
+
+    %% Track metrics after request processing
+    EndTime = erlang:monotonic_time(microsecond),
+    Duration = (EndTime - StartTime) / 1_000_000,  %% Convert to seconds
+
+    %% Record metrics with default status (will be tracked in reply functions)
+    %% Go equivalent: prometheus middleware automatically tracks status codes
+    cookie_metrics:observe_http_duration(Method, Duration),
+
     %% Return success tuple with updated request
     %% Go equivalent: return (no return value, but response written to w)
     {ok, Req2, _State}.
@@ -92,7 +104,7 @@ terminate(_Reason, _Req, _State) ->
 %% =============================================================================
 %% Erlang uses multiple function clauses instead of if/else or method overloading
 %% Pattern matching on the second parameter (Cookie) determines which clause runs
-%% 
+%%
 %% Go equivalent would be:
 %% func handleGet(w http.ResponseWriter, r *http.Request, cookie string) {
 %%     if cookie == "" {
@@ -140,7 +152,7 @@ handle_get(Req, Cookie) ->
 %% POST Request Handler - Create New Cookie
 %% =============================================================================
 %% Handles POST /cookies - creates a new cookie from JSON body
-%% 
+%%
 %% Go equivalent:
 %% func handlePost(w http.ResponseWriter, r *http.Request) {
 %%     body, err := io.ReadAll(r.Body)
@@ -173,7 +185,7 @@ handle_post_with_json(Req) ->
     %% Read request body (like io.ReadAll(r.Body) in Go)
     %% Returns tuple {ok, Body, UpdatedReq} - notice immutable request handling
     {ok, Body, Req2} = cowboy_req:read_body(Req),
-    
+
     %% Parse JSON body with nested pattern matching
     case decode_json(Body) of
         {ok, Data} ->
@@ -263,7 +275,7 @@ handle_delete(Req, Cookie) ->
 %% Database Functions - Data Layer
 %% =============================================================================
 %% These functions handle database operations using SQLite
-%% 
+%%
 %% Key Erlang/Go differences in database handling:
 %% - Connection pooling handled by separate module (cookie_db_pool)
 %% - List comprehensions instead of for loops
@@ -273,6 +285,30 @@ handle_delete(Req, Cookie) ->
 
 -spec get_all_cookies() -> {ok, [cookie_data()]} | {error, term()}.
 get_all_cookies() ->
+    %% Check if caching is enabled
+    ClusterConfig = application:get_env(cookie_crud, cluster, #{}),
+    CacheEnabled = maps:get(cache_enabled, ClusterConfig, true),
+
+    case CacheEnabled of
+        true ->
+            %% Try cache first
+            case cookie_cache:get(<<"all_cookies">>) of
+                {ok, Cookies} ->
+                    {ok, Cookies};
+                miss ->
+                    %% Cache miss, fetch from database
+                    get_all_cookies_from_db()
+            end;
+        false ->
+            %% Cache disabled, go directly to database
+            get_all_cookies_from_db()
+    end.
+
+-spec get_all_cookies_from_db() -> {ok, [cookie_data()]} | {error, term()}.
+get_all_cookies_from_db() ->
+    %% Track database operation for metrics
+    cookie_metrics:increment_db_operations(list_cookies),
+
     Query = "SELECT Data FROM Cookie ORDER BY Created DESC",
 
     %% Use connection pool pattern (like Go's sql.DB with connection pooling)
@@ -281,9 +317,9 @@ get_all_cookies() ->
         case esqlite3:q(Db, Query) of
             Rows when is_list(Rows) ->
                 %% List comprehension: decode each JSON row
-                %% Go equivalent: 
+                %% Go equivalent:
                 %% var cookies []CookieData
-                %% for rows.Next() { 
+                %% for rows.Next() {
                 %%     var data string
                 %%     rows.Scan(&data)
                 %%     cookie := decodeJSON(data)
@@ -297,13 +333,43 @@ get_all_cookies() ->
                 error(Reason)
         end
     end) of
-        {ok, Cookies} -> {ok, Cookies};
+        {ok, Cookies} ->
+            %% Cache the result for future requests (TTL from config)
+            ClusterConfig = application:get_env(cookie_crud, cluster, #{}),
+            TTL = maps:get(cache_ttl, ClusterConfig, 300),
+            cookie_cache:put(<<"all_cookies">>, Cookies, TTL),
+            {ok, Cookies};
         {error, {error, Reason, _}} -> {error, Reason};
         {error, Reason} -> {error, Reason}
     end.
 
 -spec get_cookie(binary()) -> {ok, cookie_data()} | {error, term()}.
 get_cookie(Cookie) ->
+    %% Check if caching is enabled
+    ClusterConfig = application:get_env(cookie_crud, cluster, #{}),
+    CacheEnabled = maps:get(cache_enabled, ClusterConfig, true),
+
+    case CacheEnabled of
+        true ->
+            %% Try cache first
+            CacheKey = <<"cookie:", Cookie/binary>>,
+            case cookie_cache:get(CacheKey) of
+                {ok, CookieData} ->
+                    {ok, CookieData};
+                miss ->
+                    %% Cache miss, fetch from database
+                    get_cookie_from_db(Cookie, CacheKey)
+            end;
+        false ->
+            %% Cache disabled, go directly to database
+            get_cookie_from_db(Cookie, undefined)
+    end.
+
+-spec get_cookie_from_db(binary(), binary() | undefined) -> {ok, cookie_data()} | {error, term()}.
+get_cookie_from_db(Cookie, CacheKey) ->
+    %% Track database operation for metrics
+    cookie_metrics:increment_db_operations(get_cookie),
+
     Query = "SELECT Data FROM Cookie WHERE Cookie = ?",
 
     case cookie_db_pool:with_connection(fun(Db) ->
@@ -322,7 +388,16 @@ get_cookie(Cookie) ->
         end
     end) of
         %% Complex nested pattern matching on pool result
-        {ok, {ok, Data}} -> {ok, Data};
+        {ok, {ok, Data}} ->
+            %% Cache the result if caching is enabled
+            case CacheKey of
+                undefined -> ok;  %% Caching disabled
+                _ ->
+                    ClusterConfig = application:get_env(cookie_crud, cluster, #{}),
+                    TTL = maps:get(cache_ttl, ClusterConfig, 300),
+                    cookie_cache:put(CacheKey, Data, TTL)
+            end,
+            {ok, Data};
         {ok, {error, <<"Cookie not found">>}} -> {error, <<"Cookie not found">>};
         {error, {error, Reason, _}} -> {error, Reason};
         {error, Reason} -> {error, Reason}
@@ -330,6 +405,9 @@ get_cookie(Cookie) ->
 
 -spec create_cookie(cookie_data()) -> {ok, cookie_data()} | {error, term()}.
 create_cookie(Data) ->
+    %% Track database operation for metrics
+    cookie_metrics:increment_db_operations(create_cookie),
+
     %% Validate input data first
     case validate_cookie_data(Data) of
         ok ->
@@ -360,7 +438,10 @@ create_cookie(Data) ->
                         error(Reason)
                 end
             end) of
-                {ok, Result} -> {ok, Result};
+                {ok, Result} ->
+                    %% Invalidate cache on successful create
+                    invalidate_cookie_cache(),
+                    {ok, Result};
                 {error, {error, duplicate, _}} -> {error, <<"Cookie already exists">>};
                 {error, {error, 2067, _}} -> {error, <<"Cookie already exists">>};  %% SQLITE_CONSTRAINT_UNIQUE
                 {error, {error, Reason, _}} -> {error, Reason};
@@ -373,6 +454,9 @@ create_cookie(Data) ->
 
 -spec update_cookie(binary(), cookie_data()) -> {ok, cookie_data()} | {error, term()}.
 update_cookie(Cookie, Data) ->
+    %% Track database operation for metrics
+    cookie_metrics:increment_db_operations(update_cookie),
+
     %% First check if cookie exists (read-before-write pattern)
     case get_cookie(Cookie) of
         {ok, ExistingData} ->
@@ -392,7 +476,10 @@ update_cookie(Cookie, Data) ->
                     {error, Reason} -> error(Reason)
                 end
             end) of
-                {ok, Result} -> {ok, Result};
+                {ok, Result} ->
+                    %% Invalidate cache on successful update
+                    invalidate_cookie_cache(Cookie),
+                    {ok, Result};
                 {error, {error, Reason, _}} -> {error, Reason};
                 {error, Reason} -> {error, Reason}
             end;
@@ -403,6 +490,9 @@ update_cookie(Cookie, Data) ->
 
 -spec delete_cookie(binary()) -> ok | {error, term()}.
 delete_cookie(Cookie) ->
+    %% Track database operation for metrics
+    cookie_metrics:increment_db_operations(delete_cookie),
+
     Query = "DELETE FROM Cookie WHERE Cookie = ?",
 
     case cookie_db_pool:with_connection(fun(Db) ->
@@ -418,7 +508,10 @@ delete_cookie(Cookie) ->
                 error(Reason)
         end
     end) of
-        {ok, ok} -> ok;
+        {ok, ok} ->
+            %% Invalidate cache on successful delete
+            invalidate_cookie_cache(Cookie),
+            ok;
         {error, {error, Reason, _}} -> {error, Reason};
         {error, Reason} -> {error, Reason}
     end.
@@ -470,6 +563,10 @@ format_timestamp(UnixTime) ->
 
 -spec reply_json(cowboy_req:req(), http_status(), term()) -> cowboy_req:req().
 reply_json(Req, Status, Data) ->
+    %% Track HTTP request metrics (like prometheus middleware in Go)
+    Method = cowboy_req:method(Req),
+    cookie_metrics:increment_http_requests(Method, Status),
+
     Json = encode_json(Data),
     %% Send JSON response with proper Content-Type header
     %% Go equivalent:
@@ -482,6 +579,10 @@ reply_json(Req, Status, Data) ->
 
 -spec reply_error(cowboy_req:req(), http_status(), binary()) -> cowboy_req:req().
 reply_error(Req, Status, Message) ->
+    %% Track HTTP request metrics (like prometheus middleware in Go)
+    Method = cowboy_req:method(Req),
+    cookie_metrics:increment_http_requests(Method, Status),
+
     %% Wrap error message in JSON object
     %% Go: json.Marshal(map[string]string{"error": message})
     Json = encode_json(#{error => Message}),
@@ -519,3 +620,22 @@ validate_cookie_data(Data) ->
         _ ->
             {error, <<"Cookie must be a string">>}
     end.
+
+%% =============================================================================
+%% Cache Management Functions
+%% =============================================================================
+
+-spec invalidate_cookie_cache() -> ok.
+invalidate_cookie_cache() ->
+    %% Invalidate the all_cookies cache entry
+    cookie_cache:delete(<<"all_cookies">>),
+    ok.
+
+-spec invalidate_cookie_cache(binary()) -> ok.
+invalidate_cookie_cache(Cookie) ->
+    %% Invalidate specific cookie cache entry
+    CacheKey = <<"cookie:", Cookie/binary>>,
+    cookie_cache:delete(CacheKey),
+    %% Also invalidate the all_cookies cache since the list has changed
+    cookie_cache:delete(<<"all_cookies">>),
+    ok.

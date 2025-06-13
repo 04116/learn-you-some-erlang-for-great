@@ -93,34 +93,22 @@ init([]) ->
     %% Each child spec is like a service definition in Docker Compose
     ChildSpecs = [
         #{
-            %% Unique identifier for this child process
-            %% Go equivalent: service name in a service registry
+            %% Database connection pool
             id => cookie_db_pool,
-            
-            %% How to start the process: {Module, Function, Arguments}
-            %% Go equivalent: NewService() constructor function
             start => {cookie_db_pool, start_link, []},
-            
-            %% Restart policy for this specific child
-            %% permanent: always restart if it dies
-            %% temporary: never restart
-            %% transient: restart only if it exits abnormally
-            %% Go equivalent: Kubernetes restartPolicy
             restart => permanent,
-            
-            %% Shutdown timeout: how long to wait for graceful shutdown
-            %% 5000ms = 5 seconds, then force kill
-            %% Go equivalent: context.WithTimeout for graceful shutdown
             shutdown => 5000,
-            
-            %% Process type: worker or supervisor
-            %% worker: regular process that does actual work
-            %% supervisor: another supervisor (for nested supervision trees)
             type => worker,
-            
-            %% Modules: list of modules this child implements
-            %% Used for hot code reloading and dependencies
             modules => [cookie_db_pool]
+        },
+        #{
+            %% Cluster manager for multi-instance coordination
+            id => cookie_cluster,
+            start => {cookie_cluster, start_link, []},
+            restart => permanent,
+            shutdown => 5000,
+            type => worker,
+            modules => [cookie_cluster]
         }
     ],
 

@@ -44,6 +44,13 @@
 
 -spec start(application:start_type(), term()) -> {ok, pid()} | {error, term()}.
 start(_StartType, _StartArgs) ->
+    %% Initialize metrics collection (must be done before any requests)
+    %% Go equivalent: prometheus.MustRegister(httpRequestsCounter, ...)
+    cookie_metrics:init(),
+    
+    %% Initialize ETS cache (must be done before any requests)
+    cookie_cache:init(),
+    
     %% Initialize SQLite database (create tables if needed)
     %% Go equivalent: db, err := setupDatabase()
     cookie_db_pool:init_database(),
@@ -57,8 +64,12 @@ start(_StartType, _StartArgs) ->
             %% Go equivalent:
             %% router.HandleFunc("/cookies", handleCookies)
             %% router.HandleFunc("/cookies/{cookie}", handleCookie)
+            %% router.HandleFunc("/metrics", handleMetrics)
+            %% router.HandleFunc("/cache", handleCacheStatus)
             {"/cookies", cookie_crud, []},
-            {"/cookies/:cookie", cookie_crud, []}
+            {"/cookies/:cookie", cookie_crud, []},
+            {"/metrics", cookie_metrics_handler, []},
+            {"/cache", cookie_cache_handler, []}
         ]}
     ]),
     
