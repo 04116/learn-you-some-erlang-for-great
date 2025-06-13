@@ -1,0 +1,18 @@
+{
+  "github_api_key": "ghp_xxxxxxxxxxxxxxxxxxxx",
+  "slack_bot_token": "xoxb-your-slack-bot-token",
+  "slack_channel_id": "C1234567890",
+  "thread_title": "🚀 Production Deployment",
+  "master_branch": "main",
+  "staging_branch": "staging",
+  "repos": [
+    {
+      "repo": "owner/repo1",
+      "workflow": "deploy.yml"
+    },
+    {
+      "repo": "owner/repo2", 
+      "workflow": "ci.yml"
+    }
+  ]
+}

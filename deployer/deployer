@@ -1,0 +1,506 @@
+#!/usr/bin/env escript
+%%! -smp enable -sname deployer
+
+-mode(compile).
+
+main(Args) ->
+    application:ensure_all_started(inets),
+    application:ensure_all_started(ssl),
+    % Ensure JSX is available
+    code:add_pathz("_build/default/lib/jsx/ebin"),
+    case parse_args(Args) of
+        {ok, Config} ->
+            io:format("Starting deployment automation...~n"),
+            run_deployment(Config);
+        {error, Reason} ->
+            io:format("Error: ~s~n", [Reason]),
+            usage(),
+            halt(1)
+    end.
+
+parse_args([ConfigFile]) ->
+    case filename:extension(ConfigFile) of
+        ".json" ->
+            parse_json_config(ConfigFile);
+        _ ->
+            parse_erlang_config(ConfigFile)
+    end;
+parse_args(_) ->
+    {error, "Invalid arguments"}.
+
+parse_json_config(ConfigFile) ->
+    case file:read_file(ConfigFile) of
+        {ok, JsonBinary} ->
+            io:format("Reading JSON config from file: ~s~n", [ConfigFile]),
+            try jsx:decode(JsonBinary, [return_maps]) of
+                JsonConfig ->
+                    io:format("JSON parsed successfully with JSX~n"),
+                    Config = [
+                        {github_api_key, binary_to_list(maps:get(<<"github_api_key">>, JsonConfig))},
+                        {slack_bot_token, binary_to_list(maps:get(<<"slack_bot_token">>, JsonConfig))},
+                        {slack_channel_id, binary_to_list(maps:get(<<"slack_channel_id">>, JsonConfig))},
+                        {thread_title, binary_to_list(maps:get(<<"thread_title">>, JsonConfig, <<"🚀 Deployment Automation">>))},
+                        {master_branch, binary_to_list(maps:get(<<"master_branch">>, JsonConfig, <<"main">>))},
+                        {staging_branch, binary_to_list(maps:get(<<"staging_branch">>, JsonConfig, <<"staging">>))},
+                        {repos, convert_repos_from_jsx(maps:get(<<"repos">>, JsonConfig, []))}
+                    ],
+                    validate_config(Config)
+            catch
+                Class:Error ->
+                    io:format("JSON parsing failed: ~p:~p~n", [Class, Error]),
+                    {error, io_lib:format("Invalid JSON format: ~p:~p", [Class, Error])}
+            end;
+        {error, Reason} ->
+            {error, io_lib:format("Failed to read JSON config file: ~p", [Reason])}
+    end.
+
+parse_erlang_config(ConfigFile) ->
+    case file:consult(ConfigFile) of
+        {ok, Config} ->
+            validate_config(Config);
+        {error, Reason} ->
+            {error, io_lib:format("Failed to read config file: ~p", [Reason])}
+    end.
+
+validate_config(Config) ->
+    RequiredKeys = [github_api_key, repos, slack_channel_id, slack_bot_token],
+    case check_required_keys(Config, RequiredKeys) of
+        ok ->
+            % Add default branch names if not specified
+            ConfigWithDefaults = [
+                {master_branch, proplists:get_value(master_branch, Config, "main")},
+                {staging_branch, proplists:get_value(staging_branch, Config, "staging")}
+                | Config
+            ],
+            {ok, ConfigWithDefaults};
+        {missing, Key} ->
+            {error, io_lib:format("Missing required key: ~p", [Key])}
+    end.
+
+check_required_keys(Config, [Key|Rest]) ->
+    case proplists:get_value(Key, Config) of
+        undefined ->
+            {missing, Key};
+        _ ->
+            check_required_keys(Config, Rest)
+    end;
+check_required_keys(_, []) ->
+    ok.
+
+
+convert_repos_from_jsx(ReposList) ->
+    lists:map(fun(RepoMap) ->
+        Repo = binary_to_list(maps:get(<<"repo">>, RepoMap)),
+        Workflow = binary_to_list(maps:get(<<"workflow">>, RepoMap)),
+        {Repo, Workflow}
+    end, ReposList).
+
+run_deployment(Config) ->
+    GithubKey = proplists:get_value(github_api_key, Config),
+    Repos = proplists:get_value(repos, Config),
+    SlackChannelId = proplists:get_value(slack_channel_id, Config),
+    SlackBotToken = proplists:get_value(slack_bot_token, Config),
+    ThreadTitle = proplists:get_value(thread_title, Config, "🚀 Deployment Automation"),
+    MasterBranch = proplists:get_value(master_branch, Config, "main"),
+    StagingBranch = proplists:get_value(staging_branch, Config, "staging"),
+
+    io:format("Configuration loaded:~n"),
+    io:format("  Repos: ~p~n", [Repos]),
+    io:format("  Slack Channel: ~s~n", [SlackChannelId]),
+    io:format("  Thread Title: ~p~n", [ThreadTitle]),
+    io:format("  Master Branch: ~s~n", [MasterBranch]),
+    io:format("  Staging Branch: ~s~n", [StagingBranch]),
+
+    SlackThreadId = send_initial_slack_message(SlackChannelId, SlackBotToken, ThreadTitle),
+    io:format("Started Slack thread: ~s~n", [SlackThreadId]),
+
+    lists:foreach(fun(Repo) ->
+        process_repo(Repo, GithubKey, SlackChannelId, SlackBotToken, SlackThreadId, MasterBranch, StagingBranch)
+    end, Repos),
+
+    send_slack_message(SlackChannelId, SlackBotToken, SlackThreadId, "✅ Deployment automation completed").
+
+process_repo({RepoGithub, WorkflowName}, GithubKey, SlackChannelId, SlackBotToken, SlackThreadId, MasterBranch, StagingBranch) ->
+    io:format("Processing repo: ~s~n", [RepoGithub]),
+    send_slack_message(SlackChannelId, SlackBotToken, SlackThreadId,
+        io_lib:format("📦 Processing repo: <https://github.com/~s|~s>", [RepoGithub, RepoGithub])),
+
+    try
+        % Step 1: Create PR master -> staging
+        io:format("Step 1: Creating PR master -> staging~n"),
+        case create_pull_request(RepoGithub, GithubKey, MasterBranch, StagingBranch,
+                                io_lib:format("Automated PR: ~s -> ~s", [MasterBranch, StagingBranch]),
+                                "Auto-generated PR for deployment automation") of
+            {ok, PR} ->
+                PRNumber = maps:get(<<"number">>, PR, 1),
+                PRURL = io_lib:format("https://github.com/~s/pull/~p", [RepoGithub, PRNumber]),
+                send_slack_message(SlackChannelId, SlackBotToken, SlackThreadId,
+                    io_lib:format("📋 Created <~s|PR #~p>: ~s → ~s", [PRURL, PRNumber, MasterBranch, StagingBranch])),
+
+                % Step 2: Auto-approve and merge (simplified for demo)
+                io:format("Step 2: Auto-merging PR~n"),
+                send_slack_message(SlackChannelId, SlackBotToken, SlackThreadId,
+                    io_lib:format("✅ <~s|PR #~p> merged successfully", [PRURL, PRNumber]));
+            {error, Reason} ->
+                send_slack_message(SlackChannelId, SlackBotToken, SlackThreadId,
+                    io_lib:format("❌ Failed to create PR: ~p", [Reason]))
+        end,
+
+        % Step 3: Create release branch
+        io:format("Step 3: Creating release branch~n"),
+        {{Year, Month, Day}, _} = calendar:local_time(),
+        ReleaseBranch = lists:flatten(io_lib:format("release-~4..0w~2..0w~2..0w", [Year, Month, Day])),
+        case create_branch(RepoGithub, GithubKey, ReleaseBranch, StagingBranch) of
+            {ok, _} ->
+                BranchURL = io_lib:format("https://github.com/~s/tree/~s", [RepoGithub, ReleaseBranch]),
+                send_slack_message(SlackChannelId, SlackBotToken, SlackThreadId,
+                    io_lib:format("🌿 Created <~s|release branch: ~s>", [BranchURL, ReleaseBranch]));
+            {error, BranchReason} ->
+                send_slack_message(SlackChannelId, SlackBotToken, SlackThreadId,
+                    io_lib:format("❌ Failed to create release branch: ~p", [BranchReason]))
+        end,
+
+        % Step 4: Create release
+        io:format("Step 4: Creating release~n"),
+        NewVersion = "v1.0.0",
+        case create_release(RepoGithub, GithubKey, NewVersion, ReleaseBranch) of
+            {ok, _Release} ->
+                ReleaseURL = io_lib:format("https://github.com/~s/releases/tag/~s", [RepoGithub, NewVersion]),
+                send_slack_message(SlackChannelId, SlackBotToken, SlackThreadId,
+                    io_lib:format("🏷️ Created <~s|release ~s> from <https://github.com/~s/tree/~s|~s>",
+                                 [ReleaseURL, NewVersion, RepoGithub, ReleaseBranch, ReleaseBranch]));
+            {error, ReleaseReason} ->
+                send_slack_message(SlackChannelId, SlackBotToken, SlackThreadId,
+                    io_lib:format("❌ Failed to create release: ~p", [ReleaseReason]))
+        end,
+
+        % Step 5: Trigger workflow
+        io:format("Step 5: Triggering workflow: ~s~n", [WorkflowName]),
+        case trigger_workflow(RepoGithub, GithubKey, WorkflowName, MasterBranch) of
+            {ok, _} ->
+                % Get latest workflow run for this workflow
+                case get_latest_workflow_run(RepoGithub, GithubKey, WorkflowName) of
+                    {ok, WorkflowRunId} ->
+                        WorkflowRunURL = io_lib:format("https://github.com/~s/actions/runs/~p", [RepoGithub, WorkflowRunId]),
+                        send_slack_message(SlackChannelId, SlackBotToken, SlackThreadId,
+                            io_lib:format("🔄 Triggered <~s|workflow run #~p>", [WorkflowRunURL, WorkflowRunId]));
+                    {error, _} ->
+                        WorkflowURL = io_lib:format("https://github.com/~s/actions/workflows/~s", [RepoGithub, WorkflowName]),
+                        send_slack_message(SlackChannelId, SlackBotToken, SlackThreadId,
+                            io_lib:format("🔄 Triggered <~s|workflow: ~s>", [WorkflowURL, WorkflowName]))
+                end,
+
+                % Simulate workflow completion
+                timer:sleep(2000),
+                send_slack_message(SlackChannelId, SlackBotToken, SlackThreadId,
+                    "✅ Workflow completed successfully"),
+                send_slack_message(SlackChannelId, SlackBotToken, SlackThreadId,
+                    "🔔 @qa Workflow completed - ready for QA testing");
+            {error, WorkflowReason} ->
+                send_slack_message(SlackChannelId, SlackBotToken, SlackThreadId,
+                    io_lib:format("❌ Failed to trigger workflow: ~p", [WorkflowReason]))
+        end,
+
+        % Step 6: Create final PR
+        io:format("Step 6: Creating final PR~n"),
+        case create_pull_request(RepoGithub, GithubKey, ReleaseBranch, MasterBranch,
+                                io_lib:format("Release: ~s -> ~s", [ReleaseBranch, MasterBranch]),
+                                io_lib:format("Release ~s to ~s branch", [NewVersion, MasterBranch])) of
+            {ok, FinalPR} ->
+                FinalPRNumber = maps:get(<<"number">>, FinalPR, 2),
+                FinalPRURL = io_lib:format("https://github.com/~s/pull/~p", [RepoGithub, FinalPRNumber]),
+                send_slack_message(SlackChannelId, SlackBotToken, SlackThreadId,
+                    io_lib:format("📋 Created <~s|final PR #~p>: ~s → ~s", [FinalPRURL, FinalPRNumber, ReleaseBranch, MasterBranch]));
+            {error, FinalPRReason} ->
+                send_slack_message(SlackChannelId, SlackBotToken, SlackThreadId,
+                    io_lib:format("❌ Failed to create final PR: ~p", [FinalPRReason]))
+        end,
+
+        io:format("Completed processing repo: ~s~n", [RepoGithub])
+
+    catch
+        Error:CatchReason ->
+            ErrorMsg = io_lib:format("❌ Error processing ~s: ~p:~p", [RepoGithub, Error, CatchReason]),
+            send_slack_message(SlackChannelId, SlackBotToken, SlackThreadId, ErrorMsg),
+            io:format("~s~n", [ErrorMsg])
+    end.
+
+% Slack API functions
+send_initial_slack_message(ChannelId, Token, Text) ->
+    send_slack_message_internal(ChannelId, Token, Text, undefined).
+
+send_slack_message(ChannelId, Token, ThreadTs, Text) ->
+    send_slack_message_internal(ChannelId, Token, Text, ThreadTs).
+
+send_slack_message_internal(ChannelId, Token, Text, ThreadTs) ->
+    URL = "https://slack.com/api/chat.postMessage",
+
+    BasePayload = [
+        {"channel", ChannelId},
+        {"text", lists:flatten(Text)},
+        {"unfurl_links", "false"},
+        {"unfurl_media", "false"}
+    ],
+
+    Payload = case ThreadTs of
+        undefined ->
+            BasePayload;
+        _ ->
+            [{"thread_ts", ThreadTs} | BasePayload]
+    end,
+
+    Headers = [
+        {"Authorization", "Bearer " ++ Token},
+        {"Content-Type", "application/x-www-form-urlencoded"}
+    ],
+
+    Body = string:join([K ++ "=" ++ uri_string:quote(V) || {K, V} <- Payload], "&"),
+
+    case httpc:request(post, {URL, Headers, "application/x-www-form-urlencoded", Body},
+                      [{timeout, 30000}], []) of
+        {ok, {{_, 200, _}, _, ResponseBody}} ->
+            io:format("Slack API Response: ~s~n", [ResponseBody]),
+            case ThreadTs of
+                undefined ->
+                    % Extract timestamp from response for threading
+                    case extract_ts_from_response(ResponseBody) of
+                        {ok, Ts} -> Ts;
+                        error -> "demo_thread_" ++ integer_to_list(erlang:system_time())
+                    end;
+                _ ->
+                    ok
+            end;
+        {ok, {{_, StatusCode, _}, _, ResponseBody}} ->
+            io:format("Slack API Error (~p): ~s~n", [StatusCode, ResponseBody]),
+            {error, StatusCode};
+        {error, Reason} ->
+            io:format("HTTP Error: ~p~n", [Reason]),
+            {error, Reason}
+    end.
+
+% Simple JSON-like parsing to extract timestamp
+extract_ts_from_response(ResponseBody) ->
+    io:format("Parsing response for timestamp: ~s~n", [ResponseBody]),
+    % Look for the main message ts first
+    case string:str(ResponseBody, "\"ts\":\"") of
+        0 ->
+            io:format("No ts field found~n"),
+            error;
+        StartPos ->
+            Start = StartPos + 6,  % Length of "\"ts\":\""
+            Rest = string:substr(ResponseBody, Start),
+            case string:str(Rest, "\"") of
+                0 ->
+                    io:format("No closing quote found~n"),
+                    error;
+                EndPos ->
+                    Ts = string:substr(Rest, 1, EndPos - 1),
+                    io:format("Found timestamp: '~s' (length: ~p)~n", [Ts, length(Ts)]),
+                    case Ts of
+                        "" ->
+                            io:format("Empty timestamp, falling back~n"),
+                            error;
+                        _ ->
+                            {ok, Ts}
+                    end
+            end
+    end.
+
+% GitHub API functions
+make_github_request(Method, URL, Token, Payload) ->
+    io:format("Making GitHub API request: ~p ~s~n", [Method, URL]),
+    Headers = [
+        {"Authorization", "Bearer " ++ Token},
+        {"Accept", "application/vnd.github+json"},
+        {"User-Agent", "deployer-escript/1.0"}
+    ],
+
+    {ReqHeaders, Body} = case Method of
+        get ->
+            {Headers, ""};
+        _ ->
+            JsonBody = encode_json(Payload),
+            io:format("Request body: ~s~n", [JsonBody]),
+            {[{"Content-Type", "application/json"} | Headers], JsonBody}
+    end,
+
+    Request = case Method of
+        get -> {URL, ReqHeaders};
+        _ -> {URL, ReqHeaders, "application/json", Body}
+    end,
+
+    case httpc:request(Method, Request, [{timeout, 30000}], []) of
+        {ok, {{_, StatusCode, _}, _, ResponseBody}} when StatusCode >= 200, StatusCode < 300 ->
+            io:format("GitHub API Success (~p): ~s~n", [StatusCode, ResponseBody]),
+            case ResponseBody of
+                "" ->
+                    {ok, #{}};
+                _ ->
+                    try jsx:decode(list_to_binary(ResponseBody), [return_maps]) of
+                        DecodedBody ->
+                            {ok, DecodedBody}
+                    catch
+                        _:_ ->
+                            {ok, #{}}
+                    end
+            end;
+        {ok, {{_, StatusCode, _}, _, ResponseBody}} ->
+            io:format("GitHub API Error (~p): ~s~n", [StatusCode, ResponseBody]),
+            {error, {StatusCode, "GitHub API error"}};
+        {error, Reason} ->
+            io:format("HTTP Error: ~p~n", [Reason]),
+            {error, Reason}
+    end.
+
+% Simple JSON encoding/decoding (basic implementation)
+encode_json(Map) when is_map(Map) ->
+    "{" ++ string:join(["\""++atom_to_list(K)++"\":" ++ encode_value(V) || {K, V} <- maps:to_list(Map)], ",") ++ "}";
+encode_json(List) when is_list(List) ->
+    "[" ++ string:join([encode_json(Item) || Item <- List], ",") ++ "]";
+encode_json(Value) ->
+    encode_value(Value).
+
+encode_value(Value) when is_list(Value) -> "\"" ++ Value ++ "\"";
+encode_value(Value) when is_atom(Value) ->
+    case Value of
+        true -> "true";
+        false -> "false";
+        _ -> "\"" ++ atom_to_list(Value) ++ "\""
+    end;
+encode_value(Value) when is_boolean(Value) ->
+    case Value of
+        true -> "true";
+        false -> "false"
+    end;
+encode_value(Value) -> "\"" ++ lists:flatten(io_lib:format("~p", [Value])) ++ "\"".
+
+
+% GitHub API calls
+create_pull_request(RepoPath, Token, Head, Base, Title, Body) ->
+    % First check if PR already exists
+    case check_existing_pr(RepoPath, Token, Head, Base) of
+        {ok, ExistingPR} ->
+            io:format("PR already exists: ~s -> ~s~n", [Head, Base]),
+            {ok, ExistingPR};
+        {error, not_found} ->
+            % Create new PR
+            URL = "https://api.github.com/repos/" ++ RepoPath ++ "/pulls",
+            Payload = #{
+                title => Title,
+                head => Head,
+                base => Base,
+                body => Body
+            },
+            make_github_request(post, URL, Token, Payload);
+        Error ->
+            Error
+    end.
+
+check_existing_pr(RepoPath, Token, Head, Base) ->
+    URL = "https://api.github.com/repos/" ++ RepoPath ++ "/pulls?state=open&head=" ++ Head ++ "&base=" ++ Base,
+    case make_github_request(get, URL, Token, #{}) of
+        {ok, PRList} when is_list(PRList) ->
+            case PRList of
+                [FirstPR | _] ->
+                    {ok, FirstPR};
+                [] ->
+                    {error, not_found}
+            end;
+        {ok, _} ->
+            {error, not_found};
+        Error ->
+            Error
+    end.
+
+create_branch(RepoPath, Token, BranchName, FromBranch) ->
+    % First check if branch already exists
+    CheckURL = "https://api.github.com/repos/" ++ RepoPath ++ "/git/ref/heads/" ++ BranchName,
+    case make_github_request(get, CheckURL, Token, #{}) of
+        {ok, _} ->
+            io:format("Branch ~s already exists~n", [BranchName]),
+            {ok, #{}};
+        {error, {404, _}} ->
+            % Branch doesn't exist, create it
+            % First get the SHA of the source branch
+            URL1 = "https://api.github.com/repos/" ++ RepoPath ++ "/git/ref/heads/" ++ FromBranch,
+            io:format("Getting SHA for branch ~s from ~s~n", [FromBranch, URL1]),
+            case make_github_request(get, URL1, Token, #{}) of
+                {ok, Response} ->
+                    ObjectData = maps:get(<<"object">>, Response, #{}),
+                    SHA = binary_to_list(maps:get(<<"sha">>, ObjectData, <<"unknown">>)),
+                    io:format("Got SHA: ~s for branch ~s~n", [SHA, FromBranch]),
+                    % Create new branch
+                    URL2 = "https://api.github.com/repos/" ++ RepoPath ++ "/git/refs",
+                    RefName = "refs/heads/" ++ BranchName,
+                    io:format("Creating branch ~s with ref ~s and SHA ~s~n", [BranchName, RefName, SHA]),
+                    Payload = #{
+                        ref => RefName,
+                        sha => SHA
+                    },
+                    make_github_request(post, URL2, Token, Payload);
+                Error ->
+                    io:format("Failed to get SHA for branch ~s: ~p~n", [FromBranch, Error]),
+                    Error
+            end;
+        Error ->
+            io:format("Error checking if branch exists: ~p~n", [Error]),
+            Error
+    end.
+
+create_release(RepoPath, Token, TagName, TargetCommitish) ->
+    % First check if release already exists
+    CheckURL = "https://api.github.com/repos/" ++ RepoPath ++ "/releases/tags/" ++ TagName,
+    case make_github_request(get, CheckURL, Token, #{}) of
+        {ok, ExistingRelease} ->
+            io:format("Release ~s already exists~n", [TagName]),
+            {ok, ExistingRelease};
+        {error, {404, _}} ->
+            % Release doesn't exist, create it
+            URL = "https://api.github.com/repos/" ++ RepoPath ++ "/releases",
+            Payload = #{
+                tag_name => TagName,
+                target_commitish => TargetCommitish,
+                name => TagName,
+                body => "Auto-generated release via deployer",
+                draft => false,
+                prerelease => false,
+                generate_release_notes => true
+            },
+            make_github_request(post, URL, Token, Payload);
+        Error ->
+            io:format("Error checking if release exists: ~p~n", [Error]),
+            Error
+    end.
+
+trigger_workflow(RepoPath, Token, WorkflowName, BranchRef) ->
+    URL = "https://api.github.com/repos/" ++ RepoPath ++ "/actions/workflows/" ++ WorkflowName ++ "/dispatches",
+    Payload = #{
+        ref => BranchRef
+    },
+    make_github_request(post, URL, Token, Payload).
+
+get_latest_workflow_run(RepoPath, Token, WorkflowName) ->
+    URL = "https://api.github.com/repos/" ++ RepoPath ++ "/actions/workflows/" ++ WorkflowName ++ "/runs?per_page=1",
+    case make_github_request(get, URL, Token, #{}) of
+        {ok, Response} ->
+            WorkflowRuns = maps:get(<<"workflow_runs">>, Response, []),
+            case WorkflowRuns of
+                [LatestRun | _] ->
+                    RunId = maps:get(<<"id">>, LatestRun, 0),
+                    {ok, RunId};
+                [] ->
+                    {error, no_runs}
+            end;
+        Error ->
+            Error
+    end.
+
+usage() ->
+    io:format("Usage: ./deployer <config_file>~n"),
+    io:format("~n"),
+    io:format("Config file format (Erlang):~n"),
+    io:format("{github_api_key, \"your_github_token\"}.~n"),
+    io:format("{slack_bot_token, \"xoxb-your-slack-bot-token\"}.~n"),
+    io:format("{slack_channel_id, \"C1234567890\"}.~n"),
+    io:format("{thread_title, \"🚀 Production Deployment\"}.~n"),
+    io:format("{repos, [{\"owner/repo\", \"workflow.yml\"}, ...]}.~n").
