@@ -1,0 +1,19 @@
+{application, deployer,
+ [{description, "Concurrent GitHub deployment automation tool"},
+  {vsn, "0.1.0"},
+  {registered, []},
+  {mod, {deployer_app, []}},
+  {applications,
+   [kernel,
+    stdlib,
+    inets,
+    ssl,
+    jsx
+   ]},
+  {env,[]},
+  {modules, []},
+  {maintainers, ["Deployer Team"]},
+  {licenses, ["Apache 2.0"]},
+  {links, []},
+  {escript, {main_module, deployer_cli}}
+ ]}.
