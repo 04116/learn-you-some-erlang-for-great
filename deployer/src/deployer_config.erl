@@ -2,6 +2,17 @@
 
 -export([parse_config/1, validate_config/1]).
 
+%% Type definitions
+-type config_file() :: string().
+-type config() :: [{atom(), term()}].
+-type repo_tuple() :: {string(), string()}.
+-type json_map() :: map().
+-type config_result() :: {ok, config()} | {error, string()}.
+
+%% Function specifications
+-spec parse_config(config_file()) -> config_result().
+-spec validate_config(config()) -> config_result().
+
 %% ===================================================================
 %% API functions
 %% ===================================================================
@@ -33,6 +44,14 @@ validate_config(Config) ->
 %% ===================================================================
 %% Internal functions
 %% ===================================================================
+
+-spec parse_json_config(config_file()) -> config_result().
+-spec parse_erlang_config(config_file()) -> config_result().
+-spec check_required_keys(config(), [atom()]) -> ok | {missing, atom()}.
+-spec convert_repos_from_jsx([json_map()]) -> [repo_tuple()].
+-spec get_binary_value(binary(), json_map()) -> string().
+-spec get_binary_value(binary(), json_map(), binary()) -> string().
+-spec get_boolean_value(binary(), json_map(), boolean()) -> boolean().
 
 parse_json_config(ConfigFile) ->
     case file:read_file(ConfigFile) of

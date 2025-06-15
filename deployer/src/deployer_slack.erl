@@ -5,6 +5,18 @@
     send_message/4
 ]).
 
+%% Type definitions
+-type channel_id() :: string().
+-type bot_token() :: string().
+-type thread_id() :: string().
+-type title() :: string().
+-type message() :: string() | binary() | term().
+-type slack_result() :: {ok, string()} | {error, term()}.
+
+%% Function specifications
+-spec send_initial_message(channel_id(), bot_token(), title()) -> slack_result().
+-spec send_message(channel_id(), bot_token(), thread_id(), message()) -> {ok, term()} | {error, term()}.
+
 %% ===================================================================
 %% API functions
 %% ===================================================================

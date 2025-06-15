@@ -4,6 +4,18 @@
 %% API
 -export([start_deployment/1, get_status/1]).
 
+%% Type definitions
+-type config() :: [{atom(), term()}].
+-type repo_tuple() :: {string(), string()}.
+-type worker_status() :: spawned | started | success | failed | skipped.
+-type worker_info() :: {pid(), worker_status(), non_neg_integer()}.
+-type workers_map() :: #{string() => worker_info()}.
+-type status_result() :: #{atom() => term()}.
+
+%% Function specifications
+-spec start_deployment(config()) -> {ok, pid()} | {error, term()}.
+-spec get_status(pid()) -> status_result().
+
 %% gen_statem callbacks
 -export([init/1, callback_mode/0, handle_event/4, terminate/3, code_change/4]).
 
@@ -24,6 +36,20 @@
     start_time = undefined
 }).
 
+%% gen_statem callback specs
+-spec init(config()) -> {ok, coordinating | completed, #coordinator_state{}} | {stop, term()}.
+-spec callback_mode() -> state_functions.
+-spec handle_event(term(), term(), atom(), #coordinator_state{}) -> {next_state, atom(), #coordinator_state{}}.
+-spec terminate(term(), atom(), #coordinator_state{}) -> ok.
+-spec code_change(term(), atom(), #coordinator_state{}, term()) -> {ok, atom(), #coordinator_state{}}.
+
+%% State function specs
+-spec coordinating(info | {call, term()}, term(), #coordinator_state{}) ->
+    {next_state, coordinating | completed, #coordinator_state{}} |
+    {next_state, coordinating | completed, #coordinator_state{}, [{reply, term(), term()}]}.
+-spec completed({call, term()}, term(), #coordinator_state{}) ->
+    {next_state, completed, #coordinator_state{}, [{reply, term(), term()}]}.
+
 %% ===================================================================
 %% API functions
 %% ===================================================================
@@ -41,7 +67,6 @@ get_status(Pid) ->
 callback_mode() -> state_functions.
 
 init(Config) ->
-    _GithubKey = proplists:get_value(github_api_key, Config),
     Repos = proplists:get_value(repos, Config),
     SlackChannelId = proplists:get_value(slack_channel_id, Config),
     SlackBotToken = proplists:get_value(slack_bot_token, Config),
@@ -188,10 +213,17 @@ code_change(_OldVsn, StateName, State, _Extra) ->
 %% Internal functions
 %% ===================================================================
 
+-spec spawn_workers([repo_tuple()], config(), pid()) -> workers_map().
+-spec handle_repo_completion(string(), pid(), worker_status(), string(), #coordinator_state{}) ->
+    {next_state, coordinating | completed, #coordinator_state{}}.
+-spec send_completion_summary(#coordinator_state{}) -> ok.
+-spec send_progress_update(#coordinator_state{}) -> ok.
+-spec find_repo_by_pid(pid(), workers_map()) -> {ok, string()} | not_found.
+
 spawn_workers(Repos, Config, CoordinatorPid) ->
     ConfigWithThread = [{slack_thread_id, proplists:get_value(slack_thread_id, Config, "")} | Config],
     lists:foldl(fun({RepoName, _WorkflowName} = Repo, Acc) ->
-        case deployer_worker:start_deployment(Repo, ConfigWithThread, CoordinatorPid) of
+        case deployer_deployment_worker:start_deployment(Repo, ConfigWithThread, CoordinatorPid) of
             {ok, WorkerPid} ->
                 monitor(process, WorkerPid),
                 StartTime = erlang:system_time(second),

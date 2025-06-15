@@ -1,0 +1,40 @@
+from commit: 9c6d9943
+
+ensure idempotent. tasks are deterministic by the date (utc+7) the app run. so
+the job is check that the task is already done, if not, run it, and move
+forward
+- all changes from master need to merge into staging
+- if staging is ahead of master
+  - release brach should be created from staging
+    - release notes should be generated
+    - workflow should be triggered
+    - PR from release branch to master should be created
+
+idempotent should be check at verify workflow state also. workflow should be
+created on the head commit of release branch. The job done when the workflow
+is completed.
+Also, workflow should be implemented by gen_statem. Add to CLAUDE.md, whenever
+workflow logic changed, should be reflected in the state machine.
+
+remove all unused code. Centerlized state machine logic code in one file. Can
+also merge worker and state file
+
+confused with states naming. Let refactor. Here what we need:
+- checked diff master vs staging
+- (if diff) created PR master -> staging
+  - merged PR master -> staging
+- checked diff staging vs master
+  later)
+  - (if diff) created release branch from staging
+    - created PR from release branch -> master (just create it, don't merge, it
+      MUST be manually)
+    - triggered action from head of release branch
+      - action run succeeded
+    - created release with notes from release branch
+
+add spec to all functions
+
+hard to understand functions call flow (golang based dev). Let add the docs for app, supervisor,
+coordinator and worker functions call flow
+
+remove all docs about functions call you created. not what i need.

@@ -2,6 +2,15 @@
 
 -export([main/1, start_deployment/1]).
 
+%% Type definitions
+-type args() :: [string()].
+-type config() :: [{atom(), term()}].
+-type parse_result() :: {ok, config()} | {error, string()}.
+
+%% Function specifications
+-spec main(args()) -> no_return().
+-spec start_deployment(config()) -> ok.
+
 %% ===================================================================
 %% API functions
 %% ===================================================================
@@ -36,6 +45,11 @@ start_deployment(Config) ->
 %% ===================================================================
 %% Internal functions
 %% ===================================================================
+
+-spec parse_args(args()) -> parse_result().
+-spec run_concurrent_deployment(config()) -> ok.
+-spec monitor_deployment(pid()) -> ok.
+-spec usage() -> ok.
 
 parse_args([ConfigFile]) ->
     deployer_config:parse_config(ConfigFile);
