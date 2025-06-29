@@ -10,7 +10,7 @@
     get_workflow_runs_for_commit/4,
     get_branch_sha/3,
     branch_exists/3,
-    compare_branches/4,
+    is_branch_ahead/4,
     generate_release_notes/4
 ]).
 
@@ -27,25 +27,22 @@
 -type version_string() :: string().
 -type release_notes() :: string().
 -type github_response() :: map().
--type http_error() :: {non_neg_integer(), string()}.
 -type github_result(T) :: {ok, T} | {error, term()}.
 
 %% Function specifications
--spec create_pull_request(repo_path(), github_token(), branch_name(), branch_name(), pr_title(), pr_body()) -> 
+-spec create_pull_request(repo_path(), github_token(), branch_name(), branch_name(), pr_title(), pr_body()) ->
     github_result(github_response() | no_diff_needed).
 -spec merge_pull_request(repo_path(), github_token(), pr_number()) -> github_result(github_response()).
 -spec create_branch(repo_path(), github_token(), branch_name(), branch_name()) -> github_result(github_response()).
 -spec get_next_version(repo_path(), github_token()) -> github_result(version_string()).
--spec create_release_with_notes(repo_path(), github_token(), tag_name(), branch_name(), release_notes()) -> 
+-spec create_release_with_notes(repo_path(), github_token(), tag_name(), branch_name(), release_notes()) ->
     github_result(github_response()).
 -spec trigger_workflow(repo_path(), github_token(), workflow_name(), branch_name()) -> github_result(triggered).
--spec get_workflow_runs_for_commit(repo_path(), github_token(), workflow_name(), commit_sha()) -> 
+-spec get_workflow_runs_for_commit(repo_path(), github_token(), workflow_name(), commit_sha()) ->
     github_result([github_response()]).
 -spec get_branch_sha(repo_path(), github_token(), branch_name()) -> github_result(commit_sha()).
 -spec branch_exists(repo_path(), github_token(), branch_name()) -> github_result(boolean()).
--spec compare_branches(repo_path(), github_token(), branch_name(), branch_name()) -> 
-    github_result({synchronized | staging_ahead | master_ahead | diverged, map()}).
--spec generate_release_notes(repo_path(), github_token(), branch_name(), branch_name()) -> 
+-spec generate_release_notes(repo_path(), github_token(), branch_name(), branch_name()) ->
     github_result(release_notes()).
 
 %% ===================================================================
@@ -192,10 +189,12 @@ branch_exists(RepoPath, Token, BranchName) ->
             {error, Reason}
     end.
 
-%% Compare two branches and return status
-compare_branches(RepoPath, Token, BaseBranch, HeadBranch) ->
+%% Compare two branches and return true if the base branch is ahead of the compare branch
+-spec is_branch_ahead(repo_path(), github_token(), branch_name(), branch_name()) ->
+    github_result(boolean()).
+is_branch_ahead(RepoPath, Token, BaseBranch, CompareBranch) ->
     Url = io_lib:format("https://api.github.com/repos/~s/compare/~s...~s",
-                       [RepoPath, BaseBranch, HeadBranch]),
+                       [RepoPath, BaseBranch, CompareBranch]),
     Headers = [{"Authorization", "token " ++ Token},
                {"User-Agent", "deployer/1.0"}],
 
@@ -203,15 +202,11 @@ compare_branches(RepoPath, Token, BaseBranch, HeadBranch) ->
         {ok, {{_, 200, _}, _, ResponseBody}} ->
             Response = jsx:decode(list_to_binary(ResponseBody), [return_maps]),
             AheadBy = maps:get(<<"ahead_by">>, Response, 0),
-            BehindBy = maps:get(<<"behind_by">>, Response, 0),
 
-            Status = if
-                AheadBy > 0 andalso BehindBy =:= 0 -> staging_ahead;
-                AheadBy =:= 0 andalso BehindBy > 0 -> master_ahead;
-                AheadBy =:= 0 andalso BehindBy =:= 0 -> synchronized;
-                true -> diverged
-            end,
-            {ok, Status, #{ahead_by => AheadBy, behind_by => BehindBy}};
+			case AheadBy > 0 of
+				true -> {ok, true};
+				false -> {ok, false}
+			end;
         {ok, {{_, StatusCode, _}, _, ResponseBody}} ->
             {error, {http_error, StatusCode, ResponseBody}};
         {error, Reason} ->
@@ -253,11 +248,11 @@ generate_release_notes(RepoPath, Token, FromRef, ToRef) ->
 %% ===================================================================
 
 -spec check_branches_diff(repo_path(), github_token(), branch_name(), branch_name()) -> github_result(non_neg_integer()).
--spec get_existing_pr(repo_path(), github_token(), branch_name(), branch_name()) -> 
+-spec get_existing_pr(repo_path(), github_token(), branch_name(), branch_name()) ->
     github_result(github_response()) | {error, not_found}.
--spec create_new_pr(repo_path(), github_token(), branch_name(), branch_name(), pr_title(), pr_body()) -> 
+-spec create_new_pr(repo_path(), github_token(), branch_name(), branch_name(), pr_title(), pr_body()) ->
     github_result(github_response()).
--spec create_branch_from_sha(repo_path(), github_token(), branch_name(), commit_sha()) -> 
+-spec create_branch_from_sha(repo_path(), github_token(), branch_name(), commit_sha()) ->
     github_result(github_response()).
 -spec get_latest_release(repo_path(), github_token()) -> github_result(version_string()) | {error, not_found}.
 -spec increment_version(version_string()) -> version_string().

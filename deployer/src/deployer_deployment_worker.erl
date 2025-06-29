@@ -170,24 +170,25 @@ checking_master_vs_staging(internal, check_master_vs_staging, State) ->
     io:format("[~s] Checking diff between master (~s) and staging (~s)~n", [RepoName, MasterBranch, StagingBranch]),
 
     % Check if master has changes that need to merge to staging
-    case deployer_github:compare_branches(RepoName, GithubKey, MasterBranch, StagingBranch) of
-        {ok, master_ahead, _} ->
+    case deployer_github:is_branch_ahead(RepoName, GithubKey, StagingBranch, MasterBranch) of
+        {ok, true} ->
             % Master has new commits, need to merge master -> staging first
             io:format("[~s] Master ahead of staging, creating PR master -> staging~n", [RepoName]),
             CoordinatorPid ! {repo_progress, RepoName, self(), creating_pr_master_to_staging, "Master ahead, creating PR master -> staging"},
             UpdatedState = State#worker_state{master_branch = MasterBranch, staging_branch = StagingBranch},
             {next_state, creating_pr_master_to_staging, UpdatedState, [{next_event, internal, create_pr_master_to_staging}]};
-        {ok, staging_ahead, _, _} ->
-            % Staging is ahead, proceed to check staging vs master for release
-            io:format("[~s] Staging ahead of master, proceeding to check staging vs master~n", [RepoName]),
-            CoordinatorPid ! {repo_progress, RepoName, self(), checking_staging_vs_master, "Staging ahead, checking staging vs master"},
-            UpdatedState = State#worker_state{master_branch = MasterBranch, staging_branch = StagingBranch},
+		{ok, false} ->
+            io:format("[~s] Master not ahead of staging, proceeding to check staging vs master~n", [RepoName]),
+            CoordinatorPid ! {
+			  repo_progress,
+			  RepoName,
+			  self(),
+			  checking_staging_vs_master,
+			  "Master not ahead, checking staging vs master"},
+            UpdatedState = State#worker_state{
+							master_branch = MasterBranch,
+							staging_branch = StagingBranch},
             {next_state, checking_staging_vs_master, UpdatedState, [{next_event, internal, check_staging_vs_master}]};
-        {ok, synchronized, _, _} ->
-            % Branches are in sync, no deployment needed
-            io:format("[~s] Master and staging synchronized, no deployment needed~n", [RepoName]),
-            CoordinatorPid ! {repo_skipped, RepoName, self(), "master and staging already synchronized"},
-            {next_state, completed, State};
         {error, Reason} ->
             io:format("[~s] Failed to check master vs staging: ~p~n", [RepoName, Reason]),
             CoordinatorPid ! {repo_failed, RepoName, self(), {master_staging_check_failed, Reason}},
@@ -270,21 +271,16 @@ checking_staging_vs_master(internal, check_staging_vs_master, State) ->
     io:format("[~s] Checking diff between staging (~s) and master (~s)~n", [RepoName, StagingBranch, MasterBranch]),
 
     % Check if staging has changes that need to be released
-    case deployer_github:compare_branches(RepoName, GithubKey, StagingBranch, MasterBranch) of
-        {ok, staging_ahead, _} ->
+    case deployer_github:is_branch_ahead(RepoName, GithubKey, MasterBranch, StagingBranch) of
+        {ok, true} ->
             % Staging has new commits, proceed with release
             io:format("[~s] Staging ahead of master, creating release branch~n", [RepoName]),
             CoordinatorPid ! {repo_progress, RepoName, self(), creating_release_branch, "Staging ahead, creating release branch"},
             {next_state, creating_release_branch, State, [{next_event, internal, create_release_branch}]};
-        {ok, synchronized, _, _} ->
+		{ok, false} ->
             % Branches are in sync, no release needed
-            io:format("[~s] Staging and master synchronized, no release needed~n", [RepoName]),
+            io:format("[~s] Staging not ahead of master, no release needed~n", [RepoName]),
             CoordinatorPid ! {repo_skipped, RepoName, self(), "staging and master already synchronized"},
-            {next_state, completed, State};
-        {ok, master_ahead, _} ->
-            % This shouldn't happen if we just synced, but handle it
-            io:format("[~s] Master ahead of staging after sync - unexpected state~n", [RepoName]),
-            CoordinatorPid ! {repo_failed, RepoName, self(), {unexpected_master_ahead_after_sync}},
             {next_state, completed, State};
         {error, Reason} ->
             io:format("[~s] Failed to check staging vs master: ~p~n", [RepoName, Reason]),
